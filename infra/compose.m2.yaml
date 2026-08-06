@@ -1,0 +1,74 @@
+name: codelift-m2
+
+services:
+  mongodb:
+    image: mongo:8.0.26@sha256:3ce3de7f40e914034b03b7dec654005ab54f7dc8306937e44ec6760d9e9409a1
+    command:
+      - mongod
+      - --replSet
+      - rs0
+      - --bind_ip_all
+      - --port
+      - "27017"
+    restart: unless-stopped
+    environment:
+      MONGOSH_DISABLE_TELEMETRY: "1"
+    ports:
+      - "127.0.0.1:27018:27017"
+    volumes:
+      - codelift_m2_mongo_data:/data/db
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --host
+        - 127.0.0.1
+        - --port
+        - "27017"
+        - --eval
+        - "quit(db.adminCommand({ ping: 1 }).ok === 1 ? 0 : 1)"
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    stop_grace_period: 30s
+    networks:
+      - mongo_internal
+      - host_access
+
+  mongo-rs-init:
+    image: mongo:8.0.26@sha256:3ce3de7f40e914034b03b7dec654005ab54f7dc8306937e44ec6760d9e9409a1
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /tmp
+      MONGOSH_DISABLE_TELEMETRY: "1"
+      MONGO_HOST: mongodb
+      MONGO_PORT: "27017"
+      MONGO_REPLICA_SET: rs0
+      MONGO_REPLICA_MEMBER: mongodb:27017
+      MONGO_INIT_MAX_ATTEMPTS: "120"
+    entrypoint:
+      - /bin/bash
+      - /opt/codelift/init-replica.sh
+    volumes:
+      - ./mongo/init-replica.sh:/opt/codelift/init-replica.sh:ro
+    tmpfs:
+      - /tmp
+    networks:
+      - mongo_internal
+
+networks:
+  mongo_internal:
+    internal: true
+  host_access:
+    internal: false
+
+volumes:
+  codelift_m2_mongo_data:

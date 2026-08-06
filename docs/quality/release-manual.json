@@ -1,0 +1,128 @@
+{
+  "evidenceVersion": 2,
+  "observedAt": "2026-08-06T22:08:17Z",
+  "sourceDigest": "0d39644388c1858029fadc611855fc7534c9fcef92746222d93f61ca74cc9d15",
+  "reviewProfile": "manual-in-app-browser-plus-real-playwright-supplemental",
+  "reviewIdentity": "synthetic example.test accounts only",
+  "responsiveWide": true,
+  "responsiveNarrow": true,
+  "darkTheme": true,
+  "reducedMotion": true,
+  "keyboard": true,
+  "focusManagement": true,
+  "headingsAndLandmarks": true,
+  "contrast": true,
+  "noColorOnlyMeaning": true,
+  "zoomReflow": true,
+  "goldenPath": true,
+  "missedDayContinue": true,
+  "recoveryDistinct": true,
+  "providerFallback": true,
+  "ragCitation": true,
+  "ragAbstention": true,
+  "tenantIsolation": true,
+  "plannerApproval": true,
+  "accountDeletion": true,
+  "errorRecovery": true,
+  "noConsoleErrors": true,
+  "pagesVerified": [
+    "Today",
+    "Roadmap",
+    "Reviews",
+    "Skills",
+    "Portfolio",
+    "Error Museum",
+    "AI Coach",
+    "Search / RAG",
+    "Planner",
+    "Evals",
+    "Settings",
+    "Tasks",
+    "Visual gallery",
+    "Development Admin"
+  ],
+  "measurements": {
+    "wide": {
+      "viewportWidth": 1440,
+      "viewportHeight": 1000,
+      "rootClientWidth": 1440,
+      "rootScrollWidth": 1440,
+      "bodyClientWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "horizontalOverflow": false,
+      "visibleOverflowOffenders": 0,
+      "coreMinutes": 30
+    },
+    "narrow": {
+      "viewportWidth": 320,
+      "viewportHeight": 900,
+      "rootClientWidth": 320,
+      "rootScrollWidth": 320,
+      "bodyClientWidth": 320,
+      "bodyScrollWidth": 320,
+      "horizontalOverflow": false,
+      "visibleOverflowOffenders": 0,
+      "intentionalHorizontalScrollRegions": [
+        "nav.site-nav",
+        "figure.journey-map.journey-map--compact"
+      ]
+    },
+    "motion": {
+      "normalAnimationDurationMs": 5000,
+      "normalIterationCount": "infinite",
+      "normalScrollBehavior": "smooth",
+      "reducedAnimationDurationMs": 0.01,
+      "reducedIterationCount": "1",
+      "reducedScrollBehavior": "auto"
+    },
+    "accessibility": {
+      "pageH1Count": 1,
+      "bannerCount": 1,
+      "privateNavigationCount": 1,
+      "mainCount": 1,
+      "contentInfoCount": 1,
+      "focusOutlineWidthPx": 3,
+      "skipTarget": "main#main-content",
+      "lightPrimaryTextContrastRatio": 14.66,
+      "darkPrimaryTextContrastRatio": 18.17
+    }
+  },
+  "behavioralEvidence": {
+    "playwrightJourneys": {
+      "passed": 10,
+      "failed": 0,
+      "durationSeconds": 22.4,
+      "browser": "chromium",
+      "consoleErrors": 0
+    },
+    "manualBrowser": {
+      "requiredPrivatePagesPassed": 11,
+      "additionalPagesPassed": 3,
+      "consoleErrors": 0,
+      "supportedRagScore": 0.82,
+      "unrelatedRagQuestionAbstained": true,
+      "sourceDeletionFocusTarget": "h2 Indexed sources",
+      "accountDeletionResult": "login route with deletion confirmation"
+    },
+    "focusChecks": [
+      "registration validation error focused its alert",
+      "account-deletion validation error focused its alert",
+      "RAG deletion confirmation focused the destructive confirmation action",
+      "RAG deletion cancel restored the originating action",
+      "successful RAG deletion focused the refreshed Indexed sources heading",
+      "skip link exposed a 3px focus outline and targeted main#main-content"
+    ],
+    "groundingChecks": [
+      "Cedar operating note produced a source-supported answer with a resolvable citation",
+      "the unrelated Zephyr lunar-colony question abstained while the Cedar note remained indexed",
+      "deleting the Cedar source removed its derived chunk from the private index"
+    ]
+  },
+  "screenshots": [
+    "docs/quality/screenshots/release-today-wide.png",
+    "docs/quality/screenshots/release-today-320.png",
+    "docs/quality/screenshots/release-dark-reduced.png",
+    "docs/quality/screenshots/release-rag-citations.png"
+  ],
+  "openFindings": []
+}

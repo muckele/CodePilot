@@ -1,0 +1,124 @@
+# CodeLift AI build plan
+
+## Status
+
+- Current milestone: **M14 — final verification, visual QA, and release evidence**
+- State: current-source acceptance gates pass; local checkpoint, clean-clone,
+  and aggregate clean-revision verification remain
+- Updated: 2026-08-06 (America/Los_Angeles)
+- Passing threshold: 95/100 with zero critical failures
+
+## User value
+
+A returning full-stack developer can register, build a realistic 365-day plan,
+continue the next incomplete 30-minute mission, choose honest Recovery, save
+evidence/reflections/tasks, review and demonstrate skills, grow a portfolio,
+search private notes with citations, use a mock-first coach, and approve a
+bounded weekly plan without a paid API or model download.
+
+## Completed vertical slices
+
+1. strict monorepo/contracts and immutable curriculum source preflight;
+2. secure account, onboarding, Mongo sessions, progress, evidence, reflection,
+   resume, and transactional deletion;
+3. display-ready 365-day enrichment, global seed, link maintenance, and runtime
+   validation;
+4. Today mission, FocusOrb, Core/Recovery/Stretch, nested knowledge checks,
+   scratch, persisted tasks/time/reschedule, and false-success handling;
+5. roadmap, catch-up, reviews, momentum, skills, achievements, periodic
+   reflections, and signature visual systems;
+6. portfolio/career evidence and Error Museum;
+7. typed FastAPI/Pydantic, pandas/scikit-learn baseline, protocols, mocks,
+   containers, and PostgreSQL lab;
+8. provider-neutral structured AI Coach with consent, timeout/retry, kill
+   switch, trace, and deterministic fallback;
+9. tenant-scoped note ingestion, hybrid retrieval, citations, support labels,
+   abstention, versioning, and deletion;
+10. operations/evals/security controls and a 38-case executable local dataset;
+11. optional local inference/PEFT learning boundary;
+12. bounded approval-gated planning and read-only MCP demo;
+13. Compose/CI, architecture, ADRs, runbooks, curriculum, deployment, and
+    portfolio documentation.
+
+## Final acceptance checks
+
+- fresh locked install plus Python 3.12 dev install;
+- Compose configuration and production images;
+- format, lint, typecheck, unit, real-Mongo integration, browser, and build;
+- idempotent seed/validation and 365-day runtime validation;
+- bounded live resource report;
+- local AI eval, MCP, static security, dependency audit, and bundle budget;
+- wide/320px, light/dark, reduced-motion, keyboard, error, citation,
+  approval, and deletion browser evidence;
+- machine-readable score ≥95 with zero critical failures.
+
+## Security and privacy implications
+
+The browser calls only Node. External AI requires server enablement, profile
+opt-in, per-request consent, and a disabled kill switch. Every user-owned query
+is scoped, private inputs are hashed in traces, model output is runtime parsed,
+the planner is read-only until approval, and account deletion cascades product
+and derived/index state in one transaction.
+
+## Test/eval plan
+
+- domain: date mapping, streak/momentum, review scheduling, chunking/scoring,
+  catch-up, planner bounds, provider schema/fallback/kill switch;
+- contracts/curriculum: strict boundaries, 365 invariants, display enrichment,
+  resource fidelity, task/reflection/career inputs;
+- Node: auth/CSRF/session, isolation, Core/Recovery, replay safety, tasks,
+  retrospectives, career, RAG, coach, planning, eval, deletion;
+- Python: health, analysis, ML schema/safeguards, provider protocols/mocks,
+  embeddings, reranking, local/PEFT no-download behavior;
+- browser: critical private journey and accessibility/responsive states;
+- local eval/security: 38 behavioral AI/RAG/privacy/agency cases with failing
+  negative controls, plus static structural and dependency security checks.
+
+## Current pre-commit convergence evidence
+
+These measurements come from the final candidate worktree. Every current-source
+gate has passed, including source-bound manual browser evidence and the
+fresh-volume Compose smoke. They are still pre-commit measurements: the local
+checkpoint, isolated clean-clone run, and aggregate clean-revision command must
+bind them to one stable revision before release acceptance is final.
+
+| Check                            | Current measured result                                              |
+| -------------------------------- | -------------------------------------------------------------------- |
+| pinned toolchain                 | Node 24.14.0; pnpm 11.9.0                                            |
+| frozen offline install           | passed for all 8 workspace projects                                  |
+| format / lint / strict typecheck | passed, including Ruff and strict mypy                               |
+| root unit/service suite          | passed: web 45, API 39, curriculum 14, Python 11, packages 23        |
+| real-Mongo integration           | passed: 27/27 across public and private boundaries                   |
+| Playwright browser journeys      | passed: 10/10 in Chromium, including visual/accessibility evidence   |
+| source-bound browser evidence    | passed: 11 required + 3 additional pages; four current screenshots   |
+| curriculum runtime validation    | 365 days; 7,046 semantic fields; zero failures or duplicate groups   |
+| bounded live curriculum links    | 87/87 reachable; zero unknown/unreachable; 841 day references        |
+| local behavioral AI eval         | 38/38; score 1.0; zero critical; zero external calls/downloads; $0   |
+| MCP / static security            | exact 3-tool public allowlist; zero findings/critical failures       |
+| dependency audit                 | zero known vulnerabilities after patched routing/transitive releases |
+| production web bundle            | 135,246 gzip bytes; within the 204,800-byte cap                      |
+| fresh-volume Compose smoke       | passed: four builds, seed, Python integration, fallback, deletion    |
+
+All counts above will be regenerated by `pnpm quality:report`; they must not be
+copied into the final release response if that aggregate command differs.
+
+## Open release gates in this milestone
+
+1. create the initial local checkpoint and prove that exact revision through
+   the isolated fresh-clone command;
+2. run `pnpm quality:report`, repair every failed required command, and finish
+   only with score at least 95, zero critical failures, and a clean revision;
+3. report only measured limitations; never convert optional provider or hosted
+   infrastructure boundaries into fabricated success.
+
+## Risks
+
+- third-party resource reachability changes over time; preserve `unknown`
+  separately and never delete a link on one transient failure;
+- local model hardware/licensing varies; the base path must remain no-download;
+- hosted production infrastructure is operator-owned; Compose/build/readiness
+  evidence is not a claim of a live deployment;
+- browser suspension can skew elapsed wall clock, so actual minutes stay
+  learner-authored.
+
+No persistent blocker currently survives the twelve-attempt policy.

@@ -1,0 +1,42 @@
+{
+  "name": "@codelift/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CodeLift AI Node API and trusted application boundary.",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "seed": "tsx src/seed/cli.ts seed",
+    "seed:validate": "tsx src/seed/cli.ts validate",
+    "test": "vitest run src/test/config.test.ts src/test/learning.test.ts src/test/planner-graph.test.ts",
+    "test:integration": "NODE_ENV=test MONGO_TEST_URI='mongodb://127.0.0.1:27018/codelift_m2_test?replicaSet=rs0&directConnection=true' vitest run src/test/app.integration.test.ts src/test/m2.mongo.integration.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@codelift/config": "workspace:*",
+    "@codelift/contracts": "workspace:*",
+    "@codelift/curriculum": "workspace:*",
+    "@codelift/evals": "workspace:*",
+    "argon2": "0.44.0",
+    "cookie": "2.0.1",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "8.6.2",
+    "helmet": "^8.1.0",
+    "mongoose": "9.8.0",
+    "zod": "^4.0.17"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.1.0",
+    "@types/supertest": "^6.0.3",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

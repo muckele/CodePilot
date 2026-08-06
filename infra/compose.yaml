@@ -1,0 +1,154 @@
+name: codelift
+
+services:
+  mongodb:
+    image: mongo:8.0.26@sha256:3ce3de7f40e914034b03b7dec654005ab54f7dc8306937e44ec6760d9e9409a1
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
+    restart: unless-stopped
+    environment:
+      MONGOSH_DISABLE_TELEMETRY: "1"
+    ports:
+      - "127.0.0.1:${CODELIFT_MONGO_PORT:-27018}:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand({ping:1}).ok===1?0:1)"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    stop_grace_period: 30s
+    networks: [backend]
+
+  mongo-rs-init:
+    image: mongo:8.0.26@sha256:3ce3de7f40e914034b03b7dec654005ab54f7dc8306937e44ec6760d9e9409a1
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /tmp
+      MONGOSH_DISABLE_TELEMETRY: "1"
+      MONGO_HOST: mongodb
+      MONGO_PORT: "27017"
+      MONGO_REPLICA_SET: rs0
+      MONGO_REPLICA_MEMBER: mongodb:27017
+      MONGO_INIT_MAX_ATTEMPTS: "120"
+    entrypoint: ["/bin/bash", "/opt/codelift/init-replica.sh"]
+    volumes:
+      - ./mongo/init-replica.sh:/opt/codelift/init-replica.sh:ro
+    tmpfs: ["/tmp"]
+    networks: [backend]
+
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: codelift_lab
+      POSTGRES_USER: codelift_lab
+      POSTGRES_PASSWORD: local-lab-only
+    ports:
+      - "127.0.0.1:${CODELIFT_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codelift_lab -d codelift_lab"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [backend]
+
+  ai:
+    build:
+      context: ../services/ai
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs: ["/tmp"]
+    ports:
+      - "127.0.0.1:${CODELIFT_AI_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongo-rs-init:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: development
+      API_PORT: "4000"
+      WEB_ORIGIN: ${CODELIFT_WEB_ORIGIN:-http://localhost:8080}
+      PERSISTENCE_MODE: required
+      MONGO_URI: mongodb://mongodb:27017/codelift?replicaSet=rs0
+      MONGO_DB_NAME: codelift
+      AI_PROVIDER: python_mock
+      AI_PYTHON_BASE_URL: http://ai:8000
+      AI_EXTERNAL_ENABLED: "false"
+      AI_AGENT_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${CODELIFT_API_PORT:-4000}:4000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/ready').then(r=>{if(!r.ok)process.exit(1)})"
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [backend]
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${CODELIFT_WEB_PORT:-8080}:8080"
+    networks: [backend]
+
+  seed:
+    profiles: ["tools"]
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    depends_on:
+      mongo-rs-init:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: development
+      PERSISTENCE_MODE: required
+      MONGO_URI: mongodb://mongodb:27017/codelift?replicaSet=rs0
+      MONGO_DB_NAME: codelift
+    command: ["node_modules/.bin/tsx", "apps/api/src/seed/cli.ts", "seed"]
+    restart: "no"
+    networks: [backend]
+
+networks:
+  backend:
+    internal: false
+
+volumes:
+  mongo_data:
+  postgres_data:

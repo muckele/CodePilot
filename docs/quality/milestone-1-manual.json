@@ -1,0 +1,96 @@
+{
+  "evidenceVersion": 1,
+  "observedAt": "2026-07-24T21:23:41.653Z",
+  "reviewSurface": "Isolated Google Chrome headless session controlled through the Chrome DevTools Protocol against local Vite and Express servers",
+  "sourceDigest": "82e9c69bd76baa43a5a8a14f33ac2b718b37ff33f63564016f12812540772b59",
+  "responsive": true,
+  "darkTheme": true,
+  "reducedMotion": true,
+  "keyboard": true,
+  "errorState": true,
+  "goldenPath": true,
+  "retryRecovery": true,
+  "noConsoleErrors": true,
+  "measurements": {
+    "wide": {
+      "viewportWidth": 1280,
+      "viewportHeight": 720,
+      "documentClientWidth": 1265,
+      "documentScrollWidth": 1265,
+      "horizontalOverflow": false,
+      "coreMinutes": 30,
+      "resourceCards": 2
+    },
+    "narrow": {
+      "viewportWidth": 320,
+      "viewportHeight": 800,
+      "documentClientWidth": 320,
+      "documentScrollWidth": 320,
+      "bodyScrollWidth": 320,
+      "horizontalOverflow": false,
+      "clippedDecorativeElements": [
+        "The intentionally oversized aria-hidden backdrop orbit is clipped by the app shell and does not increase document width."
+      ]
+    }
+  },
+  "themeEvidence": {
+    "darkPreferenceActive": true,
+    "loadedDarkMediaRule": true,
+    "canvasToken": "#100c1d",
+    "visualResult": "Dark Cosmic Sunrise Workshop tokens rendered legibly across the complete mission, resources, invalid-route boundary, API error state, and footer."
+  },
+  "motionEvidence": {
+    "liveReducedMotionPreferenceActive": true,
+    "loadedReducedMotionMediaRule": true,
+    "observedComputedValues": {
+      "animationDuration": "0.01ms",
+      "animationIterationCount": "1",
+      "htmlScrollBehavior": "auto"
+    },
+    "safeguards": [
+      "scroll behavior becomes auto",
+      "animation duration becomes 0.01ms",
+      "animation iteration count becomes 1",
+      "transition duration becomes 0.01ms"
+    ]
+  },
+  "keyboardEvidence": {
+    "skipLinkUnique": true,
+    "skipLinkVisibleWhenFocused": true,
+    "skipLinkTargetAfterActivation": "main-content",
+    "focusOutlineWidth": "3px",
+    "focusOutlineStyle": "solid",
+    "invalidRouteHeadingFocused": true,
+    "errorHeadingFocused": true,
+    "nativeStretchControl": "details/summary",
+    "retryControl": "native button",
+    "resourceControls": "native links with visible global focus treatment"
+  },
+  "failureRecoveryEvidence": {
+    "apiStopped": false,
+    "browserVisibleApiRequestBlocked": true,
+    "failureMethod": "Chrome network interception blocked the Vite /api proxy URL without changing application source or server state.",
+    "errorHeading": "The mission could not be reached.",
+    "unverifiedMissionContentSuppressed": true,
+    "retryLabel": "Verify again",
+    "apiRequestRestored": true,
+    "missionRecovered": true,
+    "errorPanelRemovedAfterRecovery": true
+  },
+  "additionalEvidence": {
+    "canonicalTitle": "Define the developer identity and learning contract",
+    "invalidRoute": "A direct load of /curriculum/1.5 rendered the focused whole-number boundary without curriculum content.",
+    "directRouteRepair": "The first final pass found Vite treating a dotted curriculum path as file-like before React loaded. A scoped HTML fallback was added for /curriculum/*, Vite was restarted, and the full browser pass then succeeded.",
+    "resourceLinks": "Both canonical HTTPS links exposed target=_blank and rel=noopener noreferrer.",
+    "console": "A clean-profile rerun after adding the code-native favicon recorded no application console errors, warnings, JavaScript exceptions, or Chrome log errors across success, invalid-route, simulated API-unavailable, and retry-recovery states.",
+    "sourceFidelity": "The live page showed the canonical Day 1 title, exact 30-minute schedule, two resources, Recovery win, and optional Stretch.",
+    "screenshots": {
+      "wideDarkReduced": "reports/browser-m1/wide-dark-reduced.png",
+      "narrow320": "reports/browser-m1/narrow-320.png",
+      "invalidRoute": "reports/browser-m1/invalid-route.png",
+      "apiUnavailable": "reports/browser-m1/api-unavailable.png",
+      "retryRecovered": "reports/browser-m1/retry-recovered.png"
+    }
+  },
+  "notes": "The full-page 1280px and 320px screenshots were visually inspected. Text, cards, schedules, Recovery/Stretch labels, resource controls, and footer content remained legible without overlap or horizontal document overflow. Evidence is source-bound; pnpm test:e2e fails if reviewed browser/API/contract/curriculum source changes without a fresh pass."
+}
