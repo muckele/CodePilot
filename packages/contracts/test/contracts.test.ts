@@ -15,6 +15,7 @@ import {
   progressReflectionRequestSchema,
   progressStatusRequestSchema,
   registerRequestSchema,
+  updatePortfolioArtifactRequestSchema,
   updateDayTaskPlanRequestSchema,
   updatePeriodicReflectionRequestSchema,
   type CurriculumDayResponse,
@@ -272,6 +273,18 @@ describe("account and progress contracts", () => {
         reviewPreference: "disable_reviews"
       })
     ).toThrow();
+    expect(() =>
+      onboardingRequestSchema.parse({
+        ...profile,
+        startDate: "2026-02-30"
+      })
+    ).toThrow();
+    expect(() =>
+      onboardingRequestSchema.parse({
+        ...profile,
+        timezone: "Mars/Olympus_Mons"
+      })
+    ).toThrow();
   });
 
   it("requires HTTPS for URL evidence and bounds reflection values", () => {
@@ -370,6 +383,32 @@ describe("account and progress contracts", () => {
         idempotencyKey: "job-application-contract"
       })
     ).toMatchObject({ status: "researching" });
+    expect(() =>
+      updateDayTaskPlanRequestSchema.parse({
+        status: "rescheduled",
+        estimateMinutes: 30,
+        actualMinutes: 0,
+        timerSeconds: 0,
+        timerState: "paused",
+        rescheduledFor: "2026-13-40",
+        subtasks: [subtask],
+        idempotencyKey: "invalid-reschedule-date"
+      })
+    ).toThrow();
+    expect(() =>
+      updatePortfolioArtifactRequestSchema.parse({
+        status: "draft",
+        repositoryUrl: "javascript:alert(1)",
+        demoUrl: null,
+        screenshotUrls: [],
+        skillsProven: [],
+        testsAndEvals: [],
+        tradeoffs: [],
+        limitations: [],
+        interviewQuestions: [],
+        evidenceLinks: []
+      })
+    ).toThrow();
   });
 
   it("parses authenticated session and Today aggregate responses", () => {

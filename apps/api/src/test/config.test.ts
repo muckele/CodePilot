@@ -15,6 +15,7 @@ describe("API M2 configuration", () => {
       cookieName: "codelift_session",
       secureCookie: false
     });
+    expect(config.trustProxyHops).toBe(0);
   });
 
   it("defaults production persistence to required and enforces __Host cookie semantics", () => {
@@ -40,6 +41,12 @@ describe("API M2 configuration", () => {
       mongoUri: "mongodb://user:password@127.0.0.1:27018/codelift_test?replicaSet=rs0",
       databaseName: "codelift_test"
     });
+  });
+
+  it("enables only an explicitly configured number of trusted reverse proxies", () => {
+    expect(loadApiConfig({ TRUST_PROXY_HOPS: "1" }).trustProxyHops).toBe(1);
+    expect(() => loadApiConfig({ TRUST_PROXY_HOPS: "-1" })).toThrow("TRUST_PROXY_HOPS");
+    expect(() => loadApiConfig({ TRUST_PROXY_HOPS: "3" })).toThrow("TRUST_PROXY_HOPS");
   });
 
   it.each([

@@ -2,10 +2,10 @@
 
 ## Status
 
-- Current milestone: **M14 — final verification, visual QA, and release evidence**
-- State: **release checkpoint accepted**; current-source, clean-clone, and
-  aggregate clean-revision verification all pass
-- Updated: 2026-08-06 (America/Los_Angeles)
+- Current milestone: **M15 — whole-application review hardening and MVP publication**
+- State: **review fixes validated locally**; Git publication and hosted
+  production remain operator-owned configuration boundaries
+- Updated: 2026-08-10 (America/Los_Angeles)
 - Passing threshold: 95/100 with zero critical failures
 
 ## User value
@@ -110,8 +110,53 @@ later source revision changes its measured result.
   and fresh-volume runtime/fallback smoke.
 - Every required aggregate command passed with score 100/100 and zero critical
   failures.
-- No release blocker remains. Optional hosted infrastructure and paid/local
-  model integrations remain documented boundaries, not fabricated success.
+- No application-source release blocker remains. Optional hosted infrastructure
+  and paid/local model integrations remain documented boundaries, not
+  fabricated success.
+
+## 2026-08-10 whole-application review
+
+The full application was re-reviewed across browser privacy, HTTP boundaries,
+API configuration, curriculum edge cases, Python validation, supply-chain
+advisories, visual fixtures, deployment documentation, and clean-container
+build behavior. The review produced no unresolved critical finding.
+
+Remediated findings:
+
+- browser-local mission scratch is now bounded, account-scoped, resilient to
+  unavailable storage, and cleared only for the deleted account;
+- local dates and IANA timezones are validated as real values in TypeScript,
+  while Python parses dates at its Pydantic boundary and bounds embedding text;
+- portfolio, job, evidence, and admin resource links accept HTTPS URLs without
+  embedded credentials rather than generic URL schemes;
+- Express trusts zero proxy hops by default, accepts only an explicit bounded
+  hop count, and the included nginx topology documents and configures one hop;
+- the guest CSRF bootstrap has a dedicated limiter so repeated anonymous
+  requests cannot create unbounded session records;
+- roadmap previews no longer duplicate Day 365, Recovery gallery evidence now
+  matches the domain's +5 XP award, and both behaviors have regressions;
+- the vulnerable `nanoid` transitive range is pinned to the patched 3.3.17
+  release, with the frozen lockfile regenerated; and
+- a fresh container build exposed and removed an unsupported Testing Library
+  selector option that a warm dependency tree had masked.
+
+Current-source evidence includes 139 passing unit/service tests, 28 passing
+real-Mongo integration tests, 10 passing Chromium journeys, strict TypeScript
+and mypy, clean formatting/lint, a successful production build, zero static
+security findings, zero known dependency vulnerabilities, a 135,563-byte gzip
+JavaScript bundle under the 204,800-byte cap, 38/38 behavioral eval cases, and
+a fresh-volume Compose deployment rehearsal covering four image builds, seed,
+Python availability, deterministic fallback, readiness, and account deletion.
+The source-bound manual browser review covered all 14 required routes at wide
+and 320px layouts, light/dark themes, reduced motion, keyboard focus, contrast,
+error/empty/approval states, and deletion with zero console errors.
+
+The clean-revision aggregate report remains the authoritative final gate and is
+generated after the review commit. A live hosted deployment is intentionally
+not claimed without a configured Git remote, valid GitHub authentication, a
+named deployment target/domain, secret injection, TLS ingress, and a managed
+Mongo replica-set/backup plan. The verified local Compose rehearsal is release
+evidence, not a substitute for those operator-owned production controls.
 
 ## Risks
 

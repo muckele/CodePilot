@@ -147,6 +147,7 @@ function testConfig(curriculumPath: string, nodeEnv: ApiConfig["nodeEnv"] = "tes
   return {
     nodeEnv,
     port: 4000,
+    trustProxyHops: 0,
     webOrigin: "http://localhost:5173",
     curriculumPath,
     jsonBodyLimit: "32kb",
@@ -256,6 +257,28 @@ describe("M1 API integration", () => {
     expect(response.headers["x-content-type-options"]).toBe("nosniff");
     expect(response.headers["content-security-policy"]).toBeDefined();
     expect(response.headers["x-powered-by"]).toBeUndefined();
+  });
+
+  it("trusts only the explicitly configured reverse-proxy hop count", () => {
+    const directConfig = testConfig(canonicalCurriculumPath);
+    expect(app.get("trust proxy")).toBe(false);
+
+    const proxiedApp = createApp({
+      config: { ...directConfig, trustProxyHops: 1 },
+      curriculum: {
+        status: "ready",
+        dayCount: 365,
+        sourceSha256: "a".repeat(64),
+        days: [expectedDayOne],
+        resources: {},
+        getDay() {
+          return expectedDayOne;
+        }
+      },
+      logger: silentLogger
+    });
+
+    expect(proxiedApp.get("trust proxy")).toBe(1);
   });
 
   it("does not authorize an unlisted browser origin through CORS", async () => {

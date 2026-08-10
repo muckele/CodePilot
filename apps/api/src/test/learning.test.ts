@@ -13,6 +13,7 @@ import {
   cosineSimilarity,
   deterministicEmbedding,
   lexicalSimilarity,
+  roadmapPreviewDayNumbers,
   scoreRagRelevance,
   reviewDueDates,
   skillStateForCompletion,
@@ -80,6 +81,11 @@ describe("learning domain invariants", () => {
     expect(plan.items).toHaveLength(7);
     expect(new Set(plan.items.map((item) => item.scheduledDate)).size).toBe(7);
     expect(plan.items.every((item) => item.mode === "core")).toBe(true);
+  });
+
+  it("keeps the roadmap preview unique at the end of the curriculum", () => {
+    expect(roadmapPreviewDayNumbers(360)).toEqual([360, 361, 362, 363, 364, 365]);
+    expect(roadmapPreviewDayNumbers(365)).toEqual([365]);
   });
 
   it("requires the caller to preserve an intentional skip as a non-completion", () => {

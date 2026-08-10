@@ -43,6 +43,7 @@ function configFor(uri: string): ApiConfig {
   return {
     nodeEnv: "test",
     port: 4000,
+    trustProxyHops: 0,
     webOrigin,
     curriculumPath: canonicalCurriculumPath,
     jsonBodyLimit: "32kb",

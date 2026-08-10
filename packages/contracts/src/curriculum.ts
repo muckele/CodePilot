@@ -8,7 +8,10 @@ export const nonEmptyStringSchema = z
 export const httpsUrlSchema = z
   .string()
   .url()
-  .refine((value) => new URL(value).protocol === "https:", "Must use HTTPS.");
+  .refine((value) => {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.username === "" && url.password === "";
+  }, "Must use HTTPS without embedded credentials.");
 
 export const curriculumResourceTypeSchema = z.enum([
   "course",

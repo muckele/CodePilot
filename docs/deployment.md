@@ -15,6 +15,8 @@ paid key is needed.
 
 - Terminate TLS at a trusted ingress and set `WEB_ORIGIN` to the exact HTTPS
   origin. Production automatically uses the `__Host-` secure session cookie.
+  Set `TRUST_PROXY_HOPS` to the exact number of trusted proxy hops so account
+  rate limits use the real client address; keep it `0` for direct connections.
 - Keep Mongo and Python on private networks. Do not publish PostgreSQL unless
   the optional lab/analytics use case is explicitly secured.
 - Inject `MONGO_URI` and optional provider secrets from a secret manager; never

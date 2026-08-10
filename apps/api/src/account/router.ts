@@ -224,6 +224,20 @@ export function createAccountRouter(options: {
       });
     }
   });
+  const csrfLimiter = rateLimit({
+    windowMs: 15 * 60 * 1_000,
+    limit: 60,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler(_request, response) {
+      sendProblem(response, {
+        type: "https://codelift.ai/problems/rate-limit-exceeded",
+        title: "Too many attempts",
+        status: 429,
+        detail: "Wait before requesting another browser session."
+      });
+    }
+  });
   const mutationLimiter = rateLimit({
     windowMs: 60 * 1_000,
     limit: 120,
@@ -256,6 +270,7 @@ export function createAccountRouter(options: {
 
   router.get(
     "/auth/csrf",
+    csrfLimiter,
     asyncHandler(async (request, response) => {
       const issued = await service.issueCsrf(cookieToken(request, options.config));
       setSessionCookie(response, options.config, issued.sessionToken, issued.expiresAt);

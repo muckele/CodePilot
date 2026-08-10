@@ -1,13 +1,33 @@
 import { z } from "zod";
 
-import { curriculumDayResponseSchema, nonEmptyStringSchema } from "./curriculum.js";
+import { curriculumDayResponseSchema, httpsUrlSchema, nonEmptyStringSchema } from "./curriculum.js";
 
 export const mongoIdSchema = z.string().regex(/^[0-9a-f]{24}$/i);
 export const isoDateTimeSchema = z.string().datetime({ offset: true });
-export const isoLocalDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must use YYYY-MM-DD.");
+export const isoLocalDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Must use YYYY-MM-DD.")
+  .refine((value) => {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  }, "Must be a real calendar date.");
 export const localTimeSchema = z
   .string()
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Must use 24-hour HH:mm time.");
+
+export const ianaTimezoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .refine((value) => {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+      return true;
+    } catch {
+      return false;
+    }
+  }, "Must be a supported IANA timezone.");
 
 export const emailAddressSchema = z
   .string()
@@ -36,7 +56,7 @@ export const reviewPreferenceSchema = z.enum(["before_mission", "after_mission"]
 export const onboardingProfileSchema = z
   .object({
     displayName: z.string().trim().min(1).max(60),
-    timezone: z.string().trim().min(1).max(100),
+    timezone: ianaTimezoneSchema,
     startDate: isoLocalDateSchema,
     commitmentMinutes: z.literal(30),
     preferredCodingTime: localTimeSchema,
@@ -164,15 +184,12 @@ export const progressEvidenceRequestSchema = progressEvidenceFieldsSchema
       value.kind === "demo_url"
     ) {
       try {
-        const url = new URL(value.value);
-        if (url.protocol !== "https:") {
-          throw new Error("not HTTPS");
-        }
+        httpsUrlSchema.parse(value.value);
       } catch {
         context.addIssue({
           code: "custom",
           path: ["value"],
-          message: "URL evidence must be a valid HTTPS URL."
+          message: "URL evidence must be a valid HTTPS URL without embedded credentials."
         });
       }
     }

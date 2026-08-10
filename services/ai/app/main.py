@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
 from typing import Literal
 
 from fastapi import FastAPI
@@ -62,8 +61,8 @@ def health() -> HealthResponse:
 
 @app.post("/v1/analyze/progress", response_model=ProgressAnalysisResponse)
 def analyze_progress(request: ProgressAnalysisRequest) -> ProgressAnalysisResponse:
-    today = date.fromisoformat(request.today)
-    unique_dates = {date.fromisoformat(event.completed_date) for event in request.events}
+    today = request.today
+    unique_dates = {event.completed_date for event in request.events}
     rolling_7 = sum(1 for completed in unique_dates if 0 <= (today - completed).days < 7)
     rolling_30 = sum(1 for completed in unique_dates if 0 <= (today - completed).days < 30)
     profile = profile_progress(request.events)

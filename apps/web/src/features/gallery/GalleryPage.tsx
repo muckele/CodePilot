@@ -127,7 +127,7 @@ export function GalleryPage() {
             </span>
             <div>
               <h3>Recovery evidence recorded.</h3>
-              <p>+10 XP · momentum protected · tomorrow stays small.</p>
+              <p>+5 XP · momentum protected · tomorrow stays small.</p>
             </div>
           </div>
         </StateCard>

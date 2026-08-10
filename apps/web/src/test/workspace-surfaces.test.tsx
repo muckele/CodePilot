@@ -341,6 +341,13 @@ describe("task, RAG, and gallery surfaces", () => {
         "No indexed chunk met the support threshold. Add evidence or ask a narrower question."
       )
     ).toBeInTheDocument();
+    expect(
+      screen.getByText("+5 XP · momentum protected · tomorrow stays small.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("+10 XP · momentum protected · tomorrow stays small.")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Approve plan$/u })).toHaveTextContent(
+      /^Approve plan$/u
+    );
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

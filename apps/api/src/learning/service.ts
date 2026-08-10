@@ -76,6 +76,7 @@ import {
   chunkText,
   deterministicEmbedding,
   differenceInLocalDays,
+  roadmapPreviewDayNumbers,
   reviewDueDates,
   scoreRagRelevance,
   skillStateForCompletion,
@@ -1054,11 +1055,11 @@ export class LearningService {
         totalDays: monthDays.length
       };
     });
-    const preview = Array.from({ length: 7 }, (_, index) =>
-      this.#curriculum.status === "ready"
-        ? this.#curriculum.getDay(Math.min(365, state.currentDayNumber + index))
-        : undefined
-    ).filter((day) => day !== undefined);
+    const preview = roadmapPreviewDayNumbers(state.currentDayNumber)
+      .map((dayNumber) =>
+        this.#curriculum.status === "ready" ? this.#curriculum.getDay(dayNumber) : undefined
+      )
+      .filter((day) => day !== undefined);
     return roadmapResponseSchema.parse({
       summary: state.summary,
       milestones,

@@ -22,6 +22,12 @@ import {
   saveProgressReflection,
   updateProgressStatus
 } from "./api/accountApi";
+import {
+  clearUserScratchStorage,
+  readScratch,
+  SCRATCH_MAX_LENGTH,
+  writeScratch
+} from "./scratchStorage";
 import { ALLOWED_RETURN_PATHS, allowedReturnTo } from "../../app/navigation";
 import {
   DayTaskManager,
@@ -732,7 +738,7 @@ function TodayPage({
         setMentalModelChanged(data.progress?.reflection.mentalModelChanged ?? "");
         setRetrieveLater(data.progress?.reflection.retrieveLater ?? "");
         if (data.day !== null) {
-          setScratch(window.localStorage.getItem(`codelift:scratch:${data.day.dayNumber}`) ?? "");
+          setScratch(readScratch(window.localStorage, user.id, data.day.dayNumber));
         }
       })
       .catch((error: unknown) => {
@@ -742,7 +748,7 @@ function TodayPage({
         }
         setState({ status: "error", notice: asNotice(error) });
       });
-  }, [onExpired]);
+  }, [onExpired, user.id]);
 
   useEffect(load, [load]);
 
@@ -954,11 +960,12 @@ function TodayPage({
           <textarea
             id={`scratch-${day.dayNumber}`}
             rows={8}
+            maxLength={SCRATCH_MAX_LENGTH}
             value={scratch}
             onChange={(event) => {
-              const value = event.target.value;
+              const value = event.target.value.slice(0, SCRATCH_MAX_LENGTH);
               setScratch(value);
-              window.localStorage.setItem(`codelift:scratch:${day.dayNumber}`, value);
+              writeScratch(window.localStorage, user.id, day.dayNumber, value);
             }}
             placeholder="Reconstruct the idea, write pseudocode, or keep a tiny code draft. This browser-local scratch is not completion evidence."
           />
@@ -1603,9 +1610,11 @@ function AccountPage({
 
 function DeleteAccountPage({
   csrfToken,
+  userId,
   onDeleted
 }: {
   csrfToken: string | null;
+  userId: string;
   onDeleted: (destination: string) => void;
 }) {
   const [password, setPassword] = useState("");
@@ -1627,6 +1636,7 @@ function DeleteAccountPage({
     setNotice(null);
     try {
       await deleteAccount({ password, confirmation }, csrfToken);
+      clearUserScratchStorage(window.localStorage, userId);
       onDeleted("/login?deleted=1");
     } catch (error: unknown) {
       setNotice(asNotice(error));
@@ -1955,7 +1965,13 @@ export function AccountDeletionRoute() {
     return <CheckingWorkspace />;
   }
 
-  return <DeleteAccountPage csrfToken={context.csrfToken} onDeleted={context.clearSession} />;
+  return (
+    <DeleteAccountPage
+      csrfToken={context.csrfToken}
+      userId={context.session.user.id}
+      onDeleted={context.clearSession}
+    />
+  );
 }
 
 export function AccountWorkspaceRoute({ pathname }: { pathname: string }) {

@@ -1,4 +1,5 @@
-from typing import Literal
+from datetime import date
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,13 +18,13 @@ class HealthResponse(StrictModel):
 class ProgressEvent(StrictModel):
     day_number: int = Field(ge=1, le=365)
     mode: Literal["core", "recovery"]
-    completed_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    completed_date: date
     actual_minutes: int = Field(ge=0, le=240)
 
 
 class ProgressAnalysisRequest(StrictModel):
     events: list[ProgressEvent] = Field(max_length=365)
-    today: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    today: date
 
 
 class ProgressAnalysisResponse(StrictModel):
@@ -51,7 +52,9 @@ class RiskAssistResponse(StrictModel):
 
 
 class EmbeddingRequest(StrictModel):
-    texts: list[str] = Field(min_length=1, max_length=64)
+    texts: list[Annotated[str, Field(min_length=1, max_length=8_000)]] = Field(
+        min_length=1, max_length=64
+    )
     dimensions: int = Field(default=64, ge=8, le=512)
 
 

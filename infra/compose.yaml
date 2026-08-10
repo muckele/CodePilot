@@ -96,6 +96,7 @@ services:
       NODE_ENV: development
       API_PORT: "4000"
       WEB_ORIGIN: ${CODELIFT_WEB_ORIGIN:-http://localhost:8080}
+      TRUST_PROXY_HOPS: "1"
       PERSISTENCE_MODE: required
       MONGO_URI: mongodb://mongodb:27017/codelift?replicaSet=rs0
       MONGO_DB_NAME: codelift

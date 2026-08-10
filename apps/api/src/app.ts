@@ -88,6 +88,9 @@ export function createApp(options: CreateAppOptions): express.Express {
   const logger = options.logger ?? standardRequestLogger;
 
   app.disable("x-powered-by");
+  if (options.config.trustProxyHops > 0) {
+    app.set("trust proxy", options.config.trustProxyHops);
+  }
   app.use(assignRequestId);
   app.use(logRequests(logger));
   app.use(helmet());

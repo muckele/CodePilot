@@ -37,6 +37,7 @@ export interface AiConfig {
 export interface ApiConfig {
   readonly nodeEnv: ApiEnvironment;
   readonly port: number;
+  readonly trustProxyHops: number;
   readonly webOrigin: string;
   readonly curriculumPath: string;
   readonly jsonBodyLimit: typeof HTTP_LIMITS.jsonBody;
@@ -247,6 +248,7 @@ export function loadApiConfig(environment: NodeJS.ProcessEnv = process.env): Api
   return {
     nodeEnv,
     port: parsePort(environment.API_PORT),
+    trustProxyHops: parseBoundedInteger(environment.TRUST_PROXY_HOPS, 0, 0, 2, "TRUST_PROXY_HOPS"),
     webOrigin: parseWebOrigin(environment.WEB_ORIGIN),
     curriculumPath: parseCurriculumPath(environment.CURRICULUM_PATH),
     jsonBodyLimit: HTTP_LIMITS.jsonBody,

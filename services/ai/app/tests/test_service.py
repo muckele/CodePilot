@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi.testclient import TestClient
 
 from app.analytics import profile_progress
@@ -147,19 +149,38 @@ def test_malformed_progress_input_fails_closed() -> None:
     assert response.status_code == 422
 
 
+def test_impossible_calendar_dates_fail_at_the_http_boundary() -> None:
+    response = client.post(
+        "/v1/analyze/progress",
+        json={
+            "today": "2026-02-30",
+            "events": [],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_embedding_text_is_bounded_at_the_http_boundary() -> None:
+    response = client.post(
+        "/v1/embeddings",
+        json={"texts": ["x" * 8_001], "dimensions": 16},
+    )
+    assert response.status_code == 422
+
+
 def test_pandas_profile_preserves_distinct_modes() -> None:
     profile = profile_progress(
         [
             ProgressEvent(
                 day_number=1,
                 mode="core",
-                completed_date="2026-07-24",
+                completed_date=date(2026, 7, 24),
                 actual_minutes=30,
             ),
             ProgressEvent(
                 day_number=2,
                 mode="recovery",
-                completed_date="2026-07-24",
+                completed_date=date(2026, 7, 24),
                 actual_minutes=5,
             ),
         ]

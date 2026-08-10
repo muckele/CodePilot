@@ -115,6 +115,11 @@ export function skillStateForCompletion(
   return hasPortfolioMilestone ? "demonstrated" : "practiced";
 }
 
+export function roadmapPreviewDayNumbers(currentDayNumber: number): readonly number[] {
+  const previewLength = Math.min(7, 366 - currentDayNumber);
+  return Array.from({ length: previewLength }, (_, index) => currentDayNumber + index);
+}
+
 export function buildCatchUpPlan(input: {
   strategy: "continue" | "calendar_catch_up" | "intentionally_skip";
   currentDayNumber: number;

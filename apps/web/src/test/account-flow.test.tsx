@@ -9,6 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { App } from "../app/App";
+import { scratchStorageKey, writeScratch } from "../features/account/scratchStorage";
 import { jsonResponse, verifiedMissionFixture } from "./fixtures";
 
 const profile: OnboardingProfile = {
@@ -336,6 +337,47 @@ describe("M2 browser account journey", () => {
     render(<App />);
 
     expect(await screen.findByText("Your CodeLift account data was deleted.")).toBeInTheDocument();
+  });
+
+  it("removes only the deleted account's browser-local scratch notes", async () => {
+    window.history.replaceState(null, "", "/app/account/delete");
+    const otherUserId = "64f000000000000000000002";
+    writeScratch(window.localStorage, user.id, 1, "delete with the account");
+    writeScratch(window.localStorage, otherUserId, 1, "keep for the other account");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockImplementation((input, init) => {
+        const path = String(input);
+        if (path === "/api/v1/me" && init?.method === "DELETE") {
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        if (path === "/api/v1/me") {
+          return Promise.resolve(jsonResponse({ authenticated: true, user }));
+        }
+        if (path === "/api/v1/auth/csrf") {
+          return Promise.resolve(
+            jsonResponse({
+              csrfToken: "a".repeat(43),
+              expiresAt: "2026-07-25T00:00:00.000Z"
+            })
+          );
+        }
+        return Promise.reject(new Error(`Unexpected test request: ${path}`));
+      })
+    );
+    const actor = userEvent.setup();
+
+    render(<App />);
+    await actor.type(await screen.findByLabelText("Current password"), "Correct password 123!");
+    await actor.type(screen.getByLabelText("Type DELETE to confirm"), "DELETE");
+    await actor.click(screen.getByRole("button", { name: "Permanently delete my account" }));
+
+    expect(await screen.findByText("Your CodeLift account data was deleted.")).toBeInTheDocument();
+    expect(window.localStorage.getItem(scratchStorageKey(user.id, 1))).toBeNull();
+    expect(window.localStorage.getItem(scratchStorageKey(otherUserId, 1))).toBe(
+      "keep for the other account"
+    );
+    window.localStorage.removeItem(scratchStorageKey(otherUserId, 1));
   });
 
   it("renders the server-selected day and sends Recovery as a distinct mode", async () => {

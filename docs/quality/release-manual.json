@@ -1,7 +1,7 @@
 {
   "evidenceVersion": 2,
-  "observedAt": "2026-08-06T22:08:17Z",
-  "sourceDigest": "0d39644388c1858029fadc611855fc7534c9fcef92746222d93f61ca74cc9d15",
+  "observedAt": "2026-08-10T18:31:00Z",
+  "sourceDigest": "39f6a7dd3d6481c67119ded1ddc188d621853a56c0a8f422003bda5a7bb20f5e",
   "reviewProfile": "manual-in-app-browser-plus-real-playwright-supplemental",
   "reviewIdentity": "synthetic example.test accounts only",
   "responsiveWide": true,
@@ -45,10 +45,10 @@
     "wide": {
       "viewportWidth": 1440,
       "viewportHeight": 1000,
-      "rootClientWidth": 1440,
-      "rootScrollWidth": 1440,
-      "bodyClientWidth": 1440,
-      "bodyScrollWidth": 1440,
+      "rootClientWidth": 1425,
+      "rootScrollWidth": 1425,
+      "bodyClientWidth": 1425,
+      "bodyScrollWidth": 1425,
       "horizontalOverflow": false,
       "visibleOverflowOffenders": 0,
       "coreMinutes": 30
@@ -56,10 +56,10 @@
     "narrow": {
       "viewportWidth": 320,
       "viewportHeight": 900,
-      "rootClientWidth": 320,
-      "rootScrollWidth": 320,
-      "bodyClientWidth": 320,
-      "bodyScrollWidth": 320,
+      "rootClientWidth": 305,
+      "rootScrollWidth": 305,
+      "bodyClientWidth": 305,
+      "bodyScrollWidth": 305,
       "horizontalOverflow": false,
       "visibleOverflowOffenders": 0,
       "intentionalHorizontalScrollRegions": [
@@ -91,7 +91,7 @@
     "playwrightJourneys": {
       "passed": 10,
       "failed": 0,
-      "durationSeconds": 22.4,
+      "durationSeconds": 25.9,
       "browser": "chromium",
       "consoleErrors": 0
     },
@@ -102,7 +102,8 @@
       "supportedRagScore": 0.82,
       "unrelatedRagQuestionAbstained": true,
       "sourceDeletionFocusTarget": "h2 Indexed sources",
-      "accountDeletionResult": "login route with deletion confirmation"
+      "accountDeletionResult": "login route with deletion confirmation",
+      "visualGalleryRecoveryXp": "+5 XP"
     },
     "focusChecks": [
       "registration validation error focused its alert",

@@ -10,6 +10,7 @@ import {
 } from "./account.js";
 import {
   curriculumDayResponseSchema,
+  httpsUrlSchema,
   nonEmptyStringSchema,
   resourceCheckStatusSchema
 } from "./curriculum.js";
@@ -81,15 +82,15 @@ export const portfolioArtifactSchema = z
     title: nonEmptyStringSchema,
     monthNumber: z.number().int().min(1).max(12),
     status: portfolioArtifactStatusSchema,
-    repositoryUrl: z.string().url().nullable(),
-    demoUrl: z.string().url().nullable(),
-    screenshotUrls: z.array(z.string().url()).max(12),
+    repositoryUrl: httpsUrlSchema.nullable(),
+    demoUrl: httpsUrlSchema.nullable(),
+    screenshotUrls: z.array(httpsUrlSchema).max(12),
     skillsProven: z.array(nonEmptyStringSchema).max(30),
     testsAndEvals: z.array(nonEmptyStringSchema).max(30),
     tradeoffs: z.array(nonEmptyStringSchema).max(20),
     limitations: z.array(nonEmptyStringSchema).max(20),
     interviewQuestions: z.array(nonEmptyStringSchema).max(20),
-    evidenceLinks: z.array(z.string().url()).max(30),
+    evidenceLinks: z.array(httpsUrlSchema).max(30),
     updatedAt: isoDateTimeSchema
   })
   .strict();
@@ -312,15 +313,15 @@ export const portfolioResponseSchema = z
 export const updatePortfolioArtifactRequestSchema = z
   .object({
     status: portfolioArtifactStatusSchema,
-    repositoryUrl: z.string().url().nullable(),
-    demoUrl: z.string().url().nullable(),
-    screenshotUrls: z.array(z.string().url()).max(12),
+    repositoryUrl: httpsUrlSchema.nullable(),
+    demoUrl: httpsUrlSchema.nullable(),
+    screenshotUrls: z.array(httpsUrlSchema).max(12),
     skillsProven: z.array(nonEmptyStringSchema).max(30),
     testsAndEvals: z.array(nonEmptyStringSchema).max(30),
     tradeoffs: z.array(nonEmptyStringSchema).max(20),
     limitations: z.array(nonEmptyStringSchema).max(20),
     interviewQuestions: z.array(nonEmptyStringSchema).max(20),
-    evidenceLinks: z.array(z.string().url()).max(30)
+    evidenceLinks: z.array(httpsUrlSchema).max(30)
   })
   .strict();
 
@@ -340,7 +341,7 @@ export const jobApplicationSchema = z
     company: nonEmptyStringSchema,
     role: nonEmptyStringSchema,
     status: jobApplicationStatusSchema,
-    evidenceLinks: z.array(z.string().url()).max(20),
+    evidenceLinks: z.array(httpsUrlSchema).max(20),
     nextAction: nonEmptyStringSchema,
     createdAt: isoDateTimeSchema,
     updatedAt: isoDateTimeSchema
@@ -1041,7 +1042,7 @@ export const adminOverviewResponseSchema = z
               id: nonEmptyStringSchema,
               provider: nonEmptyStringSchema,
               title: nonEmptyStringSchema,
-              url: z.string().url(),
+              url: httpsUrlSchema,
               type: nonEmptyStringSchema,
               lastCheckedStatus: resourceCheckStatusSchema,
               lastCheckedAt: isoDateTimeSchema.nullable()

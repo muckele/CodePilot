@@ -169,6 +169,7 @@ root `.env`.
 | `NODE_ENV`                         | development/test/production policy                  | `development`            |
 | `API_PORT`                         | Express port                                        | `4000`                   |
 | `WEB_ORIGIN`                       | exact allowed browser origin and CSRF origin        | `http://localhost:5173`  |
+| `TRUST_PROXY_HOPS`                 | trusted reverse proxies used for client IP policy   | `0`                      |
 | `PERSISTENCE_MODE`                 | `optional` public-preview degradation or `required` | production: `required`   |
 | `MONGO_URI` / `MONGO_DB_NAME`      | Mongo replica connection and database               | documented local values  |
 | `AI_PROVIDER`                      | `mock`, `python_mock`, `local`, or `openai`         | `mock`                   |
