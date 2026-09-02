@@ -1,7 +1,7 @@
 {
   "evidenceVersion": 2,
-  "observedAt": "2026-09-02T17:23:46Z",
-  "sourceDigest": "ed3a993dd7b6dbd78677ba8e54a44054d5ba91ebaaec3041b199d7a1bfa66dde",
+  "observedAt": "2026-09-02T18:24:27Z",
+  "sourceDigest": "79db880b2cffce7c89643c35fe0dfa7b8cc3809fc9eab436a1bef5d8996dfac4",
   "reviewProfile": "manual-in-app-browser-plus-real-playwright-supplemental",
   "reviewIdentity": "synthetic example.test accounts only",
   "responsiveWide": true,
@@ -91,9 +91,9 @@
     "playwrightJourneys": {
       "passed": 11,
       "failed": 1,
-      "durationSeconds": 28.884,
-      "durationScope": "Chromium passing run only",
-      "browser": "chromium passing; mobile-webkit focused gate red",
+      "durationSeconds": 53.7,
+      "durationScope": "exact-revision aggregate E2E run including the mobile-WebKit gate",
+      "browser": "chromium 11 passed; mobile-webkit focused gate red",
       "consoleErrors": 0,
       "mobileWebKitDisposition": "Product flow reached successful register, Today, logout, re-login, and deletion responses; the test still expects /app/today instead of the honored returnTo=/app/account."
     },

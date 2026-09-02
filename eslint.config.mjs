@@ -12,6 +12,8 @@ export default tseslint.config(
       "**/node_modules/**",
       "**/.venv/**",
       "**/reports/**",
+      "**/playwright-report/**",
+      "**/test-results/**",
       "codelift_ai_codex_master_prompt_v2_2026.md",
       "codelift_ai_curriculum_seed_v2_2026.json"
     ]
