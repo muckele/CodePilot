@@ -239,6 +239,10 @@ Execution evidence resumed on 2026-09-02:
 - exact-revision reporting checks the full untracked-file inventory before any
   gate runs and again after the gates, and rejects a changed SHA or dirty source
   at either boundary;
+- the first isolated-clone runtime smoke exposed an invalid unquoted Nginx asset
+  regex. The repair quotes the regex, adds a build-time syntax check without
+  changing the runtime `api:4000` upstream, and has focused image evidence for
+  valid syntax, UID/GID 101, and a healthy `/healthz` response;
 - the immutable controlling prompt and canonical curriculum remain unchanged
   from baseline; generated caches, environment files, and ignored reports are
   excluded from the candidate; and

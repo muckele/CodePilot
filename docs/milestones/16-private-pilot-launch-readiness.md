@@ -42,6 +42,9 @@ The acceptance distinction is deliberate:
   authentication and deletion, fail production closed for proxy/AI/topology
   boundaries, scrub internal export references, recover expired planner claims,
   and bind metrics to an exact half-open UTC window.
+- The first exact-clone runtime smoke found an invalid Nginx asset-cache regex;
+  the corrected image now checks syntax while building, preserves the runtime
+  `api:4000` upstream, runs as `101:101`, and returns a healthy `/healthz`.
 - The mobile-WebKit flow reaches invited registration, authenticated Today,
   logout, re-login, and product deletion, but its automated gate remains red:
   login honors `returnTo=/app/account` while the test still expects

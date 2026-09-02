@@ -1,7 +1,7 @@
 {
   "evidenceVersion": 2,
-  "observedAt": "2026-09-02T17:10:09Z",
-  "sourceDigest": "dca2b86e1a1a17e9c0f1427cd61c263819a8b14b9c3580c2a6bd21db40630ccc",
+  "observedAt": "2026-09-02T17:23:46Z",
+  "sourceDigest": "ed3a993dd7b6dbd78677ba8e54a44054d5ba91ebaaec3041b199d7a1bfa66dde",
   "reviewProfile": "manual-in-app-browser-plus-real-playwright-supplemental",
   "reviewIdentity": "synthetic example.test accounts only",
   "responsiveWide": true,
@@ -103,6 +103,13 @@
       "browser": "chromium",
       "scope": "fragment-only invitation/reset routes and critical-flow accessibility after the final source repairs",
       "consoleErrors": 0
+    },
+    "containerWebHealth": {
+      "passed": true,
+      "runtimeUser": "101:101",
+      "nginxSyntax": "valid",
+      "healthEndpoint": "/healthz returned HTTP 200",
+      "runtimeUpstream": "api:4000"
     },
     "manualBrowser": {
       "requiredPrivatePagesPassed": 11,
