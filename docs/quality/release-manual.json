@@ -1,7 +1,7 @@
 {
   "evidenceVersion": 2,
-  "observedAt": "2026-09-02T18:24:27Z",
-  "sourceDigest": "79db880b2cffce7c89643c35fe0dfa7b8cc3809fc9eab436a1bef5d8996dfac4",
+  "observedAt": "2026-09-02T22:06:11Z",
+  "sourceDigest": "2b8e44ff99db4bcff847fc84a28d5bd60d9ae674c8bd9f1c42f076c1c26a03bd",
   "reviewProfile": "manual-in-app-browser-plus-real-playwright-supplemental",
   "reviewIdentity": "synthetic example.test accounts only",
   "responsiveWide": true,
@@ -89,13 +89,13 @@
   },
   "behavioralEvidence": {
     "playwrightJourneys": {
-      "passed": 11,
-      "failed": 1,
-      "durationSeconds": 53.7,
-      "durationScope": "exact-revision aggregate E2E run including the mobile-WebKit gate",
-      "browser": "chromium 11 passed; mobile-webkit focused gate red",
+      "passed": 12,
+      "failed": 0,
+      "durationSeconds": 35.5,
+      "durationScope": "source-bound full E2E run including the mobile-WebKit gate",
+      "browser": "chromium 11 passed; mobile-webkit 1 passed",
       "consoleErrors": 0,
-      "mobileWebKitDisposition": "Product flow reached successful register, Today, logout, re-login, and deletion responses; the test still expects /app/today instead of the honored returnTo=/app/account."
+      "mobileWebKitDisposition": "Reauthentication honored returnTo=/app/account, rendered protected account content, navigated through the product Today link, rendered Today’s mission, and preserved successful synthetic-account deletion."
     },
     "postReviewTargetedJourney": {
       "passed": 1,
@@ -141,7 +141,5 @@
     "docs/quality/screenshots/release-dark-reduced.png",
     "docs/quality/screenshots/release-rag-citations.png"
   ],
-  "openFindings": [
-    "Required mobile-WebKit gate remains red after the bounded two-approach repair budget; exact-revision release must remain blocked unless the gate passes."
-  ]
+  "openFindings": []
 }

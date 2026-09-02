@@ -817,10 +817,14 @@ test("12. @mobile-webkit invitation cookie, Today, logout, and return smoke", as
     await expect(page.getByRole("heading", { name: "Today’s mission" })).toBeVisible();
     await page.goto("/app/account");
     await page.getByRole("button", { name: "Sign out" }).click();
-    await expect(page).toHaveURL((url) => url.pathname === "/login");
+    await expect(page).toHaveURL(/\/login\?returnTo=%2Fapp%2Faccount$/u);
     await page.getByLabel("Email address", { exact: true }).fill(account.email);
     await page.getByLabel("Password", { exact: true }).fill(account.password);
     await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page).toHaveURL(/\/app\/account$/u);
+    await expect(page.getByRole("heading", { name: "Account and preferences" })).toBeVisible();
+    await expect(page.getByLabel("Email address", { exact: true })).toHaveValue(account.email);
+    await page.getByRole("link", { name: "Today", exact: true }).click();
     await expect(page).toHaveURL(/\/app\/today$/u);
     await expect(page.getByRole("heading", { name: "Today’s mission" })).toBeVisible();
   } finally {
