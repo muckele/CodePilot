@@ -18,7 +18,7 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build:packages && pnpm --filter @codelift/api build
 
-FROM node:24.14.0-bookworm-slim AS production-dependencies
+FROM node:24.14.0-alpine3.23 AS production-dependencies
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -35,10 +35,13 @@ COPY packages/evals/package.json packages/evals/package.json
 COPY packages/ui/package.json packages/ui/package.json
 RUN pnpm install --prod --frozen-lockfile
 
-FROM node:24.14.0-bookworm-slim AS runtime
+FROM node:24.14.0-alpine3.23 AS runtime
 
 ENV NODE_ENV=production
 WORKDIR /app
+RUN apk upgrade --no-cache \
+  && rm -rf /usr/local/lib/node_modules/npm \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules
 COPY --from=production-dependencies --chown=node:node /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=production-dependencies --chown=node:node /app/packages ./packages

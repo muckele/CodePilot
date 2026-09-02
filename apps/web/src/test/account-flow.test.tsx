@@ -773,7 +773,9 @@ describe("M2 browser account journey", () => {
     expect(
       await screen.findByRole("heading", { name: "Account and preferences" })
     ).toBeInTheDocument();
-    expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(document.documentElement.dataset.motion).toBe("reduced");
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("dark");
+      expect(document.documentElement.dataset.motion).toBe("reduced");
+    });
   });
 });
