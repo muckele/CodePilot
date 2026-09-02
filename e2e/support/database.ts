@@ -1,4 +1,5 @@
 import { closePersistence, initializePersistence } from "../../apps/api/src/persistence/runtime.js";
+import { issueInvitation } from "../../apps/api/src/account/access-operator.js";
 
 import { E2E_DATABASE_NAME, E2E_MONGO_URI, guardedE2eDatabaseName } from "./environment.js";
 
@@ -25,9 +26,27 @@ export async function dropE2eDatabase(): Promise<void> {
   }
 }
 
+export async function issueE2eInvitation(email: string): Promise<string> {
+  const runtime = await openE2ePersistence();
+  try {
+    return (
+      await issueInvitation({
+        models: runtime.models,
+        email,
+        issuer: "playwright-e2e",
+        ttlMs: 60 * 60 * 1_000
+      })
+    ).token;
+  } finally {
+    await closePersistence(runtime);
+  }
+}
+
 export interface UserOwnedCounts {
   readonly user: number;
   readonly sessions: number;
+  readonly invitations: number;
+  readonly passwordResets: number;
   readonly progress: number;
   readonly reflections: number;
   readonly xpEvents: number;
@@ -51,6 +70,8 @@ export async function userOwnedCounts(userId: string): Promise<UserOwnedCounts> 
     const [
       user,
       sessions,
+      invitations,
+      passwordResets,
       progress,
       reflections,
       xpEvents,
@@ -69,6 +90,8 @@ export async function userOwnedCounts(userId: string): Promise<UserOwnedCounts> 
     ] = await Promise.all([
       runtime.models.User.countDocuments({ _id: userId }),
       runtime.models.Session.countDocuments({ userId }),
+      runtime.models.Invitation.countDocuments({ consumedByUserId: userId }),
+      runtime.models.PasswordReset.countDocuments({ userId }),
       runtime.models.Progress.countDocuments({ userId }),
       runtime.models.Reflection.countDocuments({ userId }),
       runtime.models.XpEvent.countDocuments({ userId }),
@@ -88,6 +111,8 @@ export async function userOwnedCounts(userId: string): Promise<UserOwnedCounts> 
     return {
       user,
       sessions,
+      invitations,
+      passwordResets,
       progress,
       reflections,
       xpEvents,

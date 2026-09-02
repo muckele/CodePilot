@@ -42,6 +42,9 @@ export const passwordSchema = z
   .min(12, "Use at least 12 characters.")
   .max(128, "Use no more than 128 characters.");
 
+export const accountAccessTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+export const registrationModeSchema = z.enum(["closed", "invite_only", "open"]);
+
 export const targetRoleSchema = z.enum([
   "Full-Stack AI Application Engineer",
   "Applied AI Engineer",
@@ -95,11 +98,28 @@ export const accountUserSchema = z
 export const registerRequestSchema = z
   .object({
     email: emailAddressSchema,
+    password: passwordSchema,
+    invitationToken: accountAccessTokenSchema.optional()
+  })
+  .strict();
+
+export const loginRequestSchema = registerRequestSchema.omit({ invitationToken: true }).strict();
+
+export const passwordResetRequestSchema = z
+  .object({
+    token: accountAccessTokenSchema,
     password: passwordSchema
   })
   .strict();
 
-export const loginRequestSchema = registerRequestSchema;
+export const mvpConfigurationResponseSchema = z
+  .object({
+    registrationMode: registrationModeSchema,
+    aiProvider: z.enum(["mock", "python_mock", "openai", "local"]),
+    externalAiEnabled: z.boolean(),
+    agentEnabled: z.boolean()
+  })
+  .strict();
 
 export const csrfResponseSchema = z
   .object({
@@ -261,6 +281,86 @@ export const deleteAccountRequestSchema = z
   })
   .strict();
 
+const exportJsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number().finite(),
+    z.boolean(),
+    z.null(),
+    z.array(exportJsonValueSchema),
+    z.record(z.string(), exportJsonValueSchema)
+  ])
+);
+
+const forbiddenExportKeys = new Set([
+  "_id",
+  "__v",
+  "userId",
+  "consumedByUserId",
+  "reviewItemId",
+  "password",
+  "passwordHash",
+  "token",
+  "tokenHash",
+  "csrfHash",
+  "sessionSecret",
+  "credential"
+]);
+
+function containsForbiddenExportKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsForbiddenExportKey);
+  if (typeof value !== "object" || value === null) return false;
+  return Object.entries(value).some(
+    ([key, child]) =>
+      forbiddenExportKeys.has(key) ||
+      key.toLowerCase().endsWith("hash") ||
+      containsForbiddenExportKey(child)
+  );
+}
+
+const exportRecordsSchema = z.array(z.record(z.string(), exportJsonValueSchema));
+
+export const accountExportSchema = z
+  .object({
+    schemaVersion: z.literal("codelift.account-export.v1"),
+    exportedAt: isoDateTimeSchema,
+    account: accountUserSchema,
+    sourceRecords: z
+      .object({
+        progress: exportRecordsSchema,
+        reflections: exportRecordsSchema,
+        authenticatedActivity: exportRecordsSchema,
+        reviewItems: exportRecordsSchema,
+        misconceptions: exportRecordsSchema,
+        errorMuseumEntries: exportRecordsSchema,
+        portfolioArtifacts: exportRecordsSchema,
+        jobApplications: exportRecordsSchema
+      })
+      .strict(),
+    derivedRecords: z
+      .object({
+        xpEvents: exportRecordsSchema,
+        achievements: exportRecordsSchema,
+        skillEvidence: exportRecordsSchema,
+        aiTraces: exportRecordsSchema,
+        evalRuns: exportRecordsSchema,
+        indexedSources: exportRecordsSchema,
+        agentRuns: exportRecordsSchema,
+        invitationMetadata: exportRecordsSchema,
+        passwordResetMetadata: exportRecordsSchema
+      })
+      .strict()
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (containsForbiddenExportKey(value)) {
+      context.addIssue({
+        code: "custom",
+        message: "Account exports cannot contain secret or internal fields."
+      });
+    }
+  });
+
 export const validationFieldErrorSchema = z
   .object({
     field: nonEmptyStringSchema,
@@ -273,6 +373,8 @@ export type ReviewPreference = z.infer<typeof reviewPreferenceSchema>;
 export type AccountUser = z.infer<typeof accountUserSchema>;
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
+export type PasswordResetRequest = z.infer<typeof passwordResetRequestSchema>;
+export type MvpConfigurationResponse = z.infer<typeof mvpConfigurationResponseSchema>;
 export type CsrfResponse = z.infer<typeof csrfResponseSchema>;
 export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>;
 export type MeResponse = z.infer<typeof meResponseSchema>;
@@ -286,3 +388,4 @@ export type ProgressStatusRequest = z.infer<typeof progressStatusRequestSchema>;
 export type ProgressDayResponse = z.infer<typeof progressDayResponseSchema>;
 export type AuthenticatedTodayResponse = z.infer<typeof authenticatedTodayResponseSchema>;
 export type DeleteAccountRequest = z.infer<typeof deleteAccountRequestSchema>;
+export type AccountExport = z.infer<typeof accountExportSchema>;

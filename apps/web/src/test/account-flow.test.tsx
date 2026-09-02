@@ -282,6 +282,102 @@ describe("M2 browser account journey", () => {
     expect(window.location.pathname).toBe("/app/onboarding");
   });
 
+  it("uses an invitation-link token without rendering it into the page", async () => {
+    const invitationToken = "i".repeat(43);
+    window.history.replaceState(null, "", `/register#invite=${invitationToken}`);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ authenticated: false }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          csrfToken: "a".repeat(43),
+          expiresAt: "2026-07-25T00:00:00.000Z"
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            authenticated: true,
+            user: { ...user, onboardingComplete: false, profile: null },
+            csrfToken: "b".repeat(43)
+          },
+          201
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const actor = userEvent.setup();
+
+    render(<App />);
+    expect(await screen.findByText(/one-time invitation link is ready/i)).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+    expect(window.location.hash).toBe("");
+    expect(screen.queryByDisplayValue(invitationToken)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(invitationToken);
+    await actor.type(screen.getByLabelText("Email address"), user.email);
+    await actor.type(screen.getByLabelText("Password"), "Correct horse battery staple!");
+    await actor.type(screen.getByLabelText("Confirm password"), "Correct horse battery staple!");
+    await actor.click(screen.getByRole("button", { name: "Create account" }));
+
+    const registrationCall = fetchMock.mock.calls.find(
+      ([path]) => path === "/api/v1/auth/register"
+    );
+    expect(JSON.parse(String(registrationCall?.[1]?.body))).toMatchObject({
+      email: user.email,
+      invitationToken
+    });
+  });
+
+  it("resets a password from a one-time link and returns to a signed-out login", async () => {
+    const resetToken = "r".repeat(43);
+    window.history.replaceState(null, "", `/reset-password#token=${resetToken}`);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ authenticated: false }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          csrfToken: "a".repeat(43),
+          expiresAt: "2026-07-25T00:00:00.000Z"
+        })
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actor = userEvent.setup();
+
+    render(<App />);
+    expect(
+      await screen.findByRole("heading", { name: "Choose a new password" })
+    ).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+    expect(window.location.hash).toBe("");
+    expect(document.body.textContent).not.toContain(resetToken);
+    await actor.type(screen.getByLabelText("New password"), "A newer secure password!");
+    await actor.type(screen.getByLabelText("Confirm new password"), "A newer secure password!");
+    await actor.click(screen.getByRole("button", { name: "Reset password" }));
+
+    expect(
+      await screen.findByText("Password reset complete. Sign in again with the new password.")
+    ).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/login");
+    const resetCall = fetchMock.mock.calls.find(([path]) => path === "/api/v1/auth/reset-password");
+    expect(JSON.parse(String(resetCall?.[1]?.body))).toEqual({
+      token: resetToken,
+      password: "A newer secure password!"
+    });
+  });
+
+  it.each([
+    ["/privacy", "Privacy at CodeLift"],
+    ["/terms", "Learning with honest evidence"],
+    ["/support", "Get help without exposing private work"]
+  ])("renders the public accessible policy route %s", (pathname, heading) => {
+    render(<App pathname={pathname} />);
+    expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Return to sign in" })).toHaveAttribute(
+      "href",
+      "/login"
+    );
+  });
+
   it("honors only an allowlisted protected return path after login", async () => {
     window.history.replaceState(null, "", "/login?returnTo=%2Fapp%2Faccount");
     vi.stubGlobal(

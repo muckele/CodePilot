@@ -64,7 +64,7 @@ import {
   type UpsertErrorMuseumRequest,
   type UpsertNoteRequest
 } from "@codelift/contracts";
-import { Types } from "mongoose";
+import { Types, type ClientSession } from "mongoose";
 
 import { AiGateway } from "../ai/providers.js";
 import { runLocalBehavioralEvaluation } from "../ai/local-eval.js";
@@ -83,6 +83,7 @@ import {
   xpForCompletion
 } from "../domain/learning.js";
 import { HttpProblem } from "../http/problem.js";
+import { withActiveAccountWrite } from "../persistence/active-account-write.js";
 import type { CodeLiftModels } from "../persistence/models.js";
 import type {
   AgentRunRecord,
@@ -106,6 +107,9 @@ import {
 
 const completedStatuses = ["core_completed", "recovery_completed"] as const;
 const advancedStatuses = [...completedStatuses, "intentionally_skipped"] as const;
+const maxPrivateNoteSources = 100;
+const maxPrivateNoteCorpusBytes = 2 * 1_024 * 1_024;
+const plannerDecisionLeaseMs = 2 * 60 * 1_000;
 
 function isDuplicateKeyError(error: unknown): boolean {
   return (
@@ -317,6 +321,24 @@ function problem(slug: string, title: string, status: number, detail: string): H
   });
 }
 
+function authenticationRequired(): HttpProblem {
+  return problem(
+    "authentication-required",
+    "Authentication required",
+    401,
+    "Sign in to continue to this private workspace."
+  );
+}
+
+function noteCorpusLimitReached(): HttpProblem {
+  return problem(
+    "note-corpus-limit-reached",
+    "Private note limit reached",
+    413,
+    "This private-pilot account has reached its bounded note corpus. Delete or shorten a note before adding more content."
+  );
+}
+
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -500,6 +522,41 @@ function plannerTrace(graphState: PlannerGraphState): string[] {
     .filter((event) => event.kind !== "node_completed" && event.kind !== "tool_completed")
     .slice(-24)
     .map((event) => `[${event.sequence}:${event.node}:${event.kind}] ${event.detail}`);
+}
+
+function plannerRunConflict(detail: string): HttpProblem {
+  return problem("planner-run-conflict", "Planner run conflict", 409, detail);
+}
+
+function validatedPlannerGraphState(
+  value: unknown,
+  runId: string,
+  userId: string
+): PlannerGraphState {
+  let graphState: PlannerGraphState;
+  try {
+    graphState = parsePlannerGraphState(value);
+  } catch {
+    throw problem(
+      "planner-state-invalid",
+      "Planner state is invalid",
+      409,
+      "The persisted planner checkpoint failed validation."
+    );
+  }
+  if (graphState.runId !== runId || graphState.userId !== userId) {
+    throw problem(
+      "planner-state-invalid",
+      "Planner state is invalid",
+      409,
+      "The persisted planner checkpoint does not belong to this run and account."
+    );
+  }
+  return graphState;
+}
+
+function latestPlannerCheckpointId(graphState: PlannerGraphState): string | null {
+  return graphState.checkpoints.at(-1)?.checkpointId ?? null;
 }
 
 function plannerValue(document: AgentRunRecord & { _id: Types.ObjectId }): PlannerRun {
@@ -700,12 +757,7 @@ export class LearningService {
   async #user(userId: string) {
     const user = await this.#models.User.findOne({ _id: userId });
     if (user === null) {
-      throw problem(
-        "authentication-required",
-        "Authentication required",
-        401,
-        "Sign in to continue to this private workspace."
-      );
+      throw authenticationRequired();
     }
     if (user.profile === null) {
       throw problem(
@@ -739,42 +791,64 @@ export class LearningService {
     return day;
   }
 
-  async #ensurePortfolio(userId: string): Promise<void> {
+  async #ensurePortfolio(userId: string, databaseSession: ClientSession): Promise<void> {
     const ownerId = new Types.ObjectId(userId);
-    await Promise.all(
-      artifactCatalog.map(async ([artifactKey, title], index) => {
-        const filter = { userId: ownerId, artifactKey };
-        const update = {
-          $setOnInsert: {
-            userId: ownerId,
-            artifactKey,
-            title,
-            monthNumber: Math.min(12, index + 1),
-            status: "not_started" as const,
-            repositoryUrl: null,
-            demoUrl: null,
-            screenshotUrls: [] as string[],
-            skillsProven: [] as string[],
-            testsAndEvals: [] as string[],
-            tradeoffs: [] as string[],
-            limitations: [] as string[],
-            interviewQuestions: [] as string[],
-            evidenceLinks: [] as string[]
-          }
-        };
-        await repeatSafeUpsert(
-          () => this.#models.PortfolioArtifact.updateOne(filter, update, { upsert: true }),
-          () => this.#models.PortfolioArtifact.updateOne(filter, update, { upsert: false })
-        );
-      })
-    );
+    for (const [[artifactKey, title], index] of artifactCatalog.map(
+      (artifact, index) => [artifact, index] as const
+    )) {
+      const filter = { userId: ownerId, artifactKey };
+      const update = {
+        $setOnInsert: {
+          userId: ownerId,
+          artifactKey,
+          title,
+          monthNumber: Math.min(12, index + 1),
+          status: "not_started" as const,
+          repositoryUrl: null,
+          demoUrl: null,
+          screenshotUrls: [] as string[],
+          skillsProven: [] as string[],
+          testsAndEvals: [] as string[],
+          tradeoffs: [] as string[],
+          limitations: [] as string[],
+          interviewQuestions: [] as string[],
+          evidenceLinks: [] as string[]
+        }
+      };
+      await repeatSafeUpsert(
+        () =>
+          this.#models.PortfolioArtifact.updateOne(filter, update, {
+            session: databaseSession,
+            upsert: true
+          }),
+        () =>
+          this.#models.PortfolioArtifact.updateOne(filter, update, {
+            session: databaseSession,
+            upsert: false
+          })
+      );
+    }
   }
 
   async #ensureDerivedRecords(userId: string): Promise<void> {
+    await withActiveAccountWrite(
+      this.#models,
+      userId,
+      authenticationRequired,
+      async (databaseSession) => this.#ensureDerivedRecordsInSession(userId, databaseSession)
+    );
+  }
+
+  async #ensureDerivedRecordsInSession(
+    userId: string,
+    databaseSession: ClientSession
+  ): Promise<void> {
     const completions = await this.#models.Progress.find({
       userId,
       status: { $in: completedStatuses }
-    }).lean();
+    })
+      .session(databaseSession)
+      .lean();
     for (const completion of completions) {
       const mode = completion.status === "core_completed" ? "core" : "recovery";
       const day = this.#day(completion.dayNumber);
@@ -793,8 +867,16 @@ export class LearningService {
         }
       };
       await repeatSafeUpsert(
-        () => this.#models.XpEvent.updateOne(xpFilter, xpUpdate, { upsert: true }),
-        () => this.#models.XpEvent.updateOne(xpFilter, xpUpdate, { upsert: false })
+        () =>
+          this.#models.XpEvent.updateOne(xpFilter, xpUpdate, {
+            session: databaseSession,
+            upsert: true
+          }),
+        () =>
+          this.#models.XpEvent.updateOne(xpFilter, xpUpdate, {
+            session: databaseSession,
+            upsert: false
+          })
       );
       for (const [index, schedule] of reviewDueDates(completedDate).entries()) {
         const prompt =
@@ -822,8 +904,16 @@ export class LearningService {
           }
         };
         await repeatSafeUpsert(
-          () => this.#models.ReviewItem.updateOne(reviewFilter, reviewUpdate, { upsert: true }),
-          () => this.#models.ReviewItem.updateOne(reviewFilter, reviewUpdate, { upsert: false })
+          () =>
+            this.#models.ReviewItem.updateOne(reviewFilter, reviewUpdate, {
+              session: databaseSession,
+              upsert: true
+            }),
+          () =>
+            this.#models.ReviewItem.updateOne(reviewFilter, reviewUpdate, {
+              session: databaseSession,
+              upsert: false
+            })
         );
       }
       for (const skill of day.skillTags) {
@@ -841,8 +931,16 @@ export class LearningService {
           }
         };
         await repeatSafeUpsert(
-          () => this.#models.SkillEvidence.updateOne(skillFilter, skillUpdate, { upsert: true }),
-          () => this.#models.SkillEvidence.updateOne(skillFilter, skillUpdate, { upsert: false })
+          () =>
+            this.#models.SkillEvidence.updateOne(skillFilter, skillUpdate, {
+              session: databaseSession,
+              upsert: true
+            }),
+          () =>
+            this.#models.SkillEvidence.updateOne(skillFilter, skillUpdate, {
+              session: databaseSession,
+              upsert: false
+            })
         );
       }
       if (day.portfolioMilestone !== undefined) {
@@ -871,17 +969,19 @@ export class LearningService {
           await repeatSafeUpsert(
             () =>
               this.#models.PortfolioArtifact.updateOne(artifactFilter, artifactUpdate, {
+                session: databaseSession,
                 upsert: true
               }),
             () =>
               this.#models.PortfolioArtifact.updateOne(artifactFilter, artifactUpdate, {
+                session: databaseSession,
                 upsert: false
               })
           );
         }
       }
     }
-    await this.#ensurePortfolio(userId);
+    await this.#ensurePortfolio(userId, databaseSession);
     if (completions.length > 0) {
       const achievementFilter = { userId, achievementKey: "first-return" };
       const achievementUpdate = {
@@ -895,10 +995,12 @@ export class LearningService {
       await repeatSafeUpsert(
         () =>
           this.#models.UserAchievement.updateOne(achievementFilter, achievementUpdate, {
+            session: databaseSession,
             upsert: true
           }),
         () =>
           this.#models.UserAchievement.updateOne(achievementFilter, achievementUpdate, {
+            session: databaseSession,
             upsert: false
           })
       );
@@ -916,10 +1018,12 @@ export class LearningService {
       await repeatSafeUpsert(
         () =>
           this.#models.UserAchievement.updateOne(achievementFilter, achievementUpdate, {
+            session: databaseSession,
             upsert: true
           }),
         () =>
           this.#models.UserAchievement.updateOne(achievementFilter, achievementUpdate, {
+            session: databaseSession,
             upsert: false
           })
       );
@@ -1100,26 +1204,38 @@ export class LearningService {
           "A completed mission cannot be converted into an intentional skip."
         );
       }
-      await this.#models.Progress.findOneAndUpdate(
-        { userId, dayNumber: state.currentDayNumber },
-        {
-          $set: {
-            status: "intentionally_skipped",
-            selectedMode: null,
-            statusReason: request.reason,
-            rescheduledFor: null,
-            completedAt: null
-          },
-          $setOnInsert: {
-            userId,
-            dayNumber: state.currentDayNumber,
-            evidence: [],
-            startedAt: null
-          },
-          $addToSet: { operationKeys: request.idempotencyKey },
-          $inc: { version: 1 }
-        },
-        { upsert: true, returnDocument: "after", runValidators: true }
+      await withActiveAccountWrite(
+        this.#models,
+        userId,
+        authenticationRequired,
+        async (databaseSession) => {
+          await this.#models.Progress.findOneAndUpdate(
+            { userId, dayNumber: state.currentDayNumber },
+            {
+              $set: {
+                status: "intentionally_skipped",
+                selectedMode: null,
+                statusReason: request.reason,
+                rescheduledFor: null,
+                completedAt: null
+              },
+              $setOnInsert: {
+                userId,
+                dayNumber: state.currentDayNumber,
+                evidence: [],
+                startedAt: null
+              },
+              $addToSet: { operationKeys: request.idempotencyKey },
+              $inc: { version: 1 }
+            },
+            {
+              session: databaseSession,
+              upsert: true,
+              returnDocument: "after",
+              runValidators: true
+            }
+          );
+        }
       );
     }
     return catchUpPlanResponseSchema.parse(plan);
@@ -1149,33 +1265,44 @@ export class LearningService {
         existing.status
       );
     const status = protectedStatus ? existing.status : request.status;
-    const progress = await this.#models.Progress.findOneAndUpdate(
-      { userId, dayNumber },
-      {
-        $set: {
-          status,
-          estimateMinutes: request.estimateMinutes,
-          actualMinutes: request.actualMinutes,
-          timerSeconds: request.timerSeconds,
-          timerState: request.timerState,
-          subtasks: request.subtasks,
-          rescheduledFor: status === "rescheduled" ? request.rescheduledFor : null,
-          ...(status === "rescheduled"
-            ? { selectedMode: null, statusReason: "Rescheduled by the learner." }
-            : {})
-        },
-        $setOnInsert: {
-          userId,
-          dayNumber,
-          evidence: [],
-          startedAt: null,
-          completedAt: null
-        },
-        $addToSet: { operationKeys: request.idempotencyKey },
-        $inc: { version: 1 }
-      },
-      { upsert: true, returnDocument: "after", runValidators: true }
-    ).lean();
+    const progress = await withActiveAccountWrite(
+      this.#models,
+      userId,
+      authenticationRequired,
+      async (databaseSession) =>
+        this.#models.Progress.findOneAndUpdate(
+          { userId, dayNumber },
+          {
+            $set: {
+              status,
+              estimateMinutes: request.estimateMinutes,
+              actualMinutes: request.actualMinutes,
+              timerSeconds: request.timerSeconds,
+              timerState: request.timerState,
+              subtasks: request.subtasks,
+              rescheduledFor: status === "rescheduled" ? request.rescheduledFor : null,
+              ...(status === "rescheduled"
+                ? { selectedMode: null, statusReason: "Rescheduled by the learner." }
+                : {})
+            },
+            $setOnInsert: {
+              userId,
+              dayNumber,
+              evidence: [],
+              startedAt: null,
+              completedAt: null
+            },
+            $addToSet: { operationKeys: request.idempotencyKey },
+            $inc: { version: 1 }
+          },
+          {
+            session: databaseSession,
+            upsert: true,
+            returnDocument: "after",
+            runValidators: true
+          }
+        ).lean()
+    );
     if (progress === null) {
       throw new Error("Task plan update did not return a progress record.");
     }
@@ -1202,35 +1329,50 @@ export class LearningService {
   }
 
   async submitReview(userId: string, reviewId: string, request: SubmitReviewRequest) {
-    const existing = await this.#models.ReviewItem.findOne({ _id: reviewId, userId });
-    if (existing === null) {
-      throw problem(
-        "review-not-found",
-        "Review not found",
-        404,
-        "The requested review item is not available in this account."
-      );
-    }
-    if (!existing.operationKeys.includes(request.idempotencyKey)) {
-      existing.status = "completed";
-      existing.answer = request.answer;
-      existing.confidenceBefore = request.confidenceBefore;
-      existing.confidenceAfter = request.confidenceAfter;
-      existing.completedAt = this.#now();
-      existing.operationKeys.push(request.idempotencyKey);
-      await existing.save();
-      if (request.misconception.length > 0) {
-        await this.#models.Misconception.create({
-          userId,
-          sourceDayNumber: existing.sourceDayNumber,
-          reviewItemId: existing._id,
-          text: request.misconception,
-          corrected: false,
-          correctedAt: null
-        });
+    const review = await withActiveAccountWrite(
+      this.#models,
+      userId,
+      authenticationRequired,
+      async (databaseSession) => {
+        const existing = await this.#models.ReviewItem.findOne({ _id: reviewId, userId }).session(
+          databaseSession
+        );
+        if (existing === null) {
+          throw problem(
+            "review-not-found",
+            "Review not found",
+            404,
+            "The requested review item is not available in this account."
+          );
+        }
+        if (!existing.operationKeys.includes(request.idempotencyKey)) {
+          existing.status = "completed";
+          existing.answer = request.answer;
+          existing.confidenceBefore = request.confidenceBefore;
+          existing.confidenceAfter = request.confidenceAfter;
+          existing.completedAt = this.#now();
+          existing.operationKeys.push(request.idempotencyKey);
+          await existing.save({ session: databaseSession });
+          if (request.misconception.length > 0) {
+            await this.#models.Misconception.create(
+              [
+                {
+                  userId,
+                  sourceDayNumber: existing.sourceDayNumber,
+                  reviewItemId: existing._id,
+                  text: request.misconception,
+                  corrected: false,
+                  correctedAt: null
+                }
+              ],
+              { session: databaseSession }
+            );
+          }
+        }
+        return existing;
       }
-    }
-    return reviewValue(existing);
+    );
+    return reviewValue(review);
   }
 
   async periodicReflections(userId: string) {
@@ -1262,35 +1404,41 @@ export class LearningService {
     dayNumber: number,
     request: UpdatePeriodicReflectionRequest
   ) {
-    await this.#user(userId);
     this.#day(dayNumber);
-    const existing = await this.#models.Reflection.findOne({ userId, dayNumber });
-    if (existing?.operationKeys.includes(request.idempotencyKey) === true) {
-      return periodicReflectionSchema.parse({
-        dayNumber,
-        weeklySummary: existing.weeklySummary,
-        monthlyRetrospective: existing.monthlyRetrospective,
-        updatedAt: iso(existing.updatedAt)
-      });
-    }
-    const reflection = await this.#models.Reflection.findOneAndUpdate(
-      { userId, dayNumber },
-      {
-        $set: {
-          weeklySummary: request.weeklySummary,
-          monthlyRetrospective: request.monthlyRetrospective
-        },
-        $setOnInsert: {
-          userId,
-          dayNumber,
-          confused: "",
-          mentalModelChanged: "",
-          retrieveLater: "",
-          completedAt: null
-        },
-        $addToSet: { operationKeys: request.idempotencyKey }
-      },
-      { upsert: true, returnDocument: "after", runValidators: true }
+    const reflection = await withActiveAccountWrite(
+      this.#models,
+      userId,
+      authenticationRequired,
+      async (databaseSession) => {
+        const existing = await this.#models.Reflection.findOne({ userId, dayNumber }).session(
+          databaseSession
+        );
+        if (existing?.operationKeys.includes(request.idempotencyKey) === true) return existing;
+        return this.#models.Reflection.findOneAndUpdate(
+          { userId, dayNumber },
+          {
+            $set: {
+              weeklySummary: request.weeklySummary,
+              monthlyRetrospective: request.monthlyRetrospective
+            },
+            $setOnInsert: {
+              userId,
+              dayNumber,
+              confused: "",
+              mentalModelChanged: "",
+              retrieveLater: "",
+              completedAt: null
+            },
+            $addToSet: { operationKeys: request.idempotencyKey }
+          },
+          {
+            session: databaseSession,
+            upsert: true,
+            returnDocument: "after",
+            runValidators: true
+          }
+        );
+      }
     );
     if (reflection === null) {
       throw new Error("Periodic reflection update did not return a reflection record.");
@@ -1378,7 +1526,7 @@ export class LearningService {
     artifactKey: string,
     request: UpdatePortfolioArtifactRequest
   ): Promise<PortfolioArtifact> {
-    await this.#ensurePortfolio(userId);
+    await this.#ensureDerivedRecords(userId);
     const artifact = await this.#models.PortfolioArtifact.findOneAndUpdate(
       { userId, artifactKey },
       { $set: request },
@@ -1410,21 +1558,36 @@ export class LearningService {
     userId: string,
     request: CreateJobApplicationRequest
   ): Promise<JobApplication> {
-    await this.#user(userId);
-    const existing = await this.#models.JobApplication.findOne({
+    const application = await withActiveAccountWrite(
+      this.#models,
       userId,
-      idempotencyKey: request.idempotencyKey
-    }).lean();
-    if (existing !== null) return jobValue(existing);
-    const application = await this.#models.JobApplication.create({
-      userId,
-      company: request.company,
-      role: request.role,
-      status: request.status,
-      evidenceLinks: request.evidenceLinks,
-      nextAction: request.nextAction,
-      idempotencyKey: request.idempotencyKey
-    });
+      authenticationRequired,
+      async (databaseSession) => {
+        const existing = await this.#models.JobApplication.findOne({
+          userId,
+          idempotencyKey: request.idempotencyKey
+        })
+          .session(databaseSession)
+          .lean();
+        if (existing !== null) return existing;
+        const [created] = await this.#models.JobApplication.create(
+          [
+            {
+              userId,
+              company: request.company,
+              role: request.role,
+              status: request.status,
+              evidenceLinks: request.evidenceLinks,
+              nextAction: request.nextAction,
+              idempotencyKey: request.idempotencyKey
+            }
+          ],
+          { session: databaseSession }
+        );
+        if (created === undefined) throw new Error("Job application creation returned no record.");
+        return created;
+      }
+    );
     return jobValue(application);
   }
 
@@ -1437,36 +1600,51 @@ export class LearningService {
   }
 
   async saveError(userId: string, request: UpsertErrorMuseumRequest): Promise<ErrorMuseumEntry> {
-    await this.#user(userId);
-    const replay = await this.#models.ErrorMuseumEntry.findOne({
+    const entry = await withActiveAccountWrite(
+      this.#models,
       userId,
-      idempotencyKey: request.idempotencyKey
-    }).lean();
-    if (replay !== null) return errorValue(replay);
-    const entry = await this.#models.ErrorMuseumEntry.create({
-      userId,
-      dayNumber: request.dayNumber,
-      title: request.title,
-      bug: request.bug,
-      hypothesis: request.hypothesis,
-      evidence: request.evidence,
-      fix: request.fix,
-      test: request.test,
-      lesson: request.lesson,
-      tags: request.tags,
-      idempotencyKey: request.idempotencyKey
-    });
-    await this.#models.UserAchievement.updateOne(
-      { userId, achievementKey: "evidence-debugger" },
-      {
-        $setOnInsert: {
+      authenticationRequired,
+      async (databaseSession) => {
+        const replay = await this.#models.ErrorMuseumEntry.findOne({
           userId,
-          achievementKey: "evidence-debugger",
-          evidenceKey: `error:${entry._id.toString()}`,
-          awardedAt: this.#now()
-        }
-      },
-      { upsert: true }
+          idempotencyKey: request.idempotencyKey
+        })
+          .session(databaseSession)
+          .lean();
+        if (replay !== null) return replay;
+        const [created] = await this.#models.ErrorMuseumEntry.create(
+          [
+            {
+              userId,
+              dayNumber: request.dayNumber,
+              title: request.title,
+              bug: request.bug,
+              hypothesis: request.hypothesis,
+              evidence: request.evidence,
+              fix: request.fix,
+              test: request.test,
+              lesson: request.lesson,
+              tags: request.tags,
+              idempotencyKey: request.idempotencyKey
+            }
+          ],
+          { session: databaseSession }
+        );
+        if (created === undefined) throw new Error("Error entry creation returned no record.");
+        await this.#models.UserAchievement.updateOne(
+          { userId, achievementKey: "evidence-debugger" },
+          {
+            $setOnInsert: {
+              userId,
+              achievementKey: "evidence-debugger",
+              evidenceKey: `error:${created._id.toString()}`,
+              awardedAt: this.#now()
+            }
+          },
+          { session: databaseSession, upsert: true }
+        );
+        return created;
+      }
     );
     return errorValue(entry);
   }
@@ -1475,50 +1653,120 @@ export class LearningService {
     await this.#user(userId);
     const sources = await this.#models.IndexedSource.find({ userId })
       .sort({ updatedAt: -1 })
+      .limit(maxPrivateNoteSources + 1)
       .lean();
+    if (sources.length > maxPrivateNoteSources) throw noteCorpusLimitReached();
     return notesResponseSchema.parse({ sources: sources.map(noteValue) });
   }
 
   async saveNote(userId: string, request: UpsertNoteRequest) {
-    await this.#user(userId);
     const contentHash = sha256(request.content);
     const chunks = chunkText(request.content);
-    if (request.sourceId !== undefined) {
-      const source = await this.#models.IndexedSource.findOne({
-        _id: request.sourceId,
-        userId
-      });
-      if (source === null) {
-        throw problem(
-          "note-not-found",
-          "Note not found",
-          404,
-          "The requested note is not available in this account."
-        );
-      }
-      if (!source.operationKeys.includes(request.idempotencyKey)) {
-        source.title = request.title;
-        source.dayNumber = request.dayNumber;
-        source.content = request.content;
-        source.contentHash = contentHash;
-        source.version += 1;
-        source.chunks = [...chunks];
-        source.operationKeys.push(request.idempotencyKey);
-        await source.save();
-      }
-      return noteResponseSchema.parse({ source: noteValue(source) });
-    }
-    const created = await this.#models.IndexedSource.create({
+    const source = await withActiveAccountWrite(
+      this.#models,
       userId,
-      title: request.title,
-      dayNumber: request.dayNumber,
-      content: request.content,
-      contentHash,
-      version: 1,
-      chunks: [...chunks],
-      operationKeys: [request.idempotencyKey]
-    });
-    return noteResponseSchema.parse({ source: noteValue(created) });
+      authenticationRequired,
+      async (databaseSession) => {
+        const replay = await this.#models.IndexedSource.findOne({
+          userId,
+          operationKeys: request.idempotencyKey
+        }).session(databaseSession);
+        if (replay !== null) {
+          if (request.sourceId === undefined || replay.id === request.sourceId) return replay;
+          throw problem(
+            "note-conflict",
+            "Note conflict",
+            409,
+            "This operation key has already been used for a different note."
+          );
+        }
+
+        const existing =
+          request.sourceId === undefined
+            ? null
+            : await this.#models.IndexedSource.findOne({
+                _id: request.sourceId,
+                userId
+              }).session(databaseSession);
+        if (request.sourceId !== undefined && existing === null) {
+          throw problem(
+            "note-not-found",
+            "Note not found",
+            404,
+            "The requested note is not available in this account."
+          );
+        }
+
+        const corpus = await this.#models.IndexedSource.find({ userId })
+          .select({ content: 1 })
+          .limit(maxPrivateNoteSources + 1)
+          .session(databaseSession)
+          .lean();
+        if (
+          corpus.length > maxPrivateNoteSources ||
+          (existing === null && corpus.length >= maxPrivateNoteSources)
+        ) {
+          throw noteCorpusLimitReached();
+        }
+        const storedBytes = corpus.reduce(
+          (total, entry) => total + Buffer.byteLength(entry.content, "utf8"),
+          0
+        );
+        const nextBytes =
+          storedBytes -
+          (existing === null ? 0 : Buffer.byteLength(existing.content, "utf8")) +
+          Buffer.byteLength(request.content, "utf8");
+        if (nextBytes > maxPrivateNoteCorpusBytes) throw noteCorpusLimitReached();
+
+        if (existing !== null) {
+          const updated = await this.#models.IndexedSource.findOneAndUpdate(
+            { _id: existing._id, userId, version: existing.version },
+            {
+              $set: {
+                title: request.title,
+                dayNumber: request.dayNumber,
+                content: request.content,
+                contentHash,
+                chunks: [...chunks]
+              },
+              $addToSet: { operationKeys: request.idempotencyKey },
+              $inc: { version: 1 }
+            },
+            { session: databaseSession, returnDocument: "after", runValidators: true }
+          );
+          if (updated === null) {
+            throw problem(
+              "note-conflict",
+              "Note conflict",
+              409,
+              "The note changed before this bounded update could be saved."
+            );
+          }
+          return updated;
+        }
+
+        const [created] = await this.#models.IndexedSource.create(
+          [
+            {
+              userId,
+              title: request.title,
+              dayNumber: request.dayNumber,
+              content: request.content,
+              contentHash,
+              version: 1,
+              chunks: [...chunks],
+              operationKeys: [request.idempotencyKey]
+            }
+          ],
+          { session: databaseSession }
+        );
+        if (created === undefined) {
+          throw new Error("Note creation did not return a source record.");
+        }
+        return created;
+      }
+    );
+    return noteResponseSchema.parse({ source: noteValue(source) });
   }
 
   async deleteNote(userId: string, sourceId: string): Promise<void> {
@@ -1537,7 +1785,10 @@ export class LearningService {
   async search(userId: string, request: RagSearchRequest): Promise<RagSearchResponse> {
     await this.#user(userId);
     const startedAt = performance.now();
-    const sources = await this.#models.IndexedSource.find({ userId }).lean();
+    const sources = await this.#models.IndexedSource.find({ userId })
+      .limit(maxPrivateNoteSources + 1)
+      .lean();
+    if (sources.length > maxPrivateNoteSources) throw noteCorpusLimitReached();
     const queryEmbedding = deterministicEmbedding(request.question);
     const candidates = sources.flatMap((source) =>
       source.chunks.map((chunk) => {
@@ -1580,22 +1831,36 @@ export class LearningService {
           .map((candidate) => candidate.chunk.text)
           .join(" ")
           .slice(0, 900)}`;
-    const trace = await this.#models.AiTrace.create({
+    const trace = await withActiveAccountWrite(
+      this.#models,
       userId,
-      feature: "rag-search",
-      provider: "mock-hybrid",
-      outcome: abstained ? "abstained" : "success",
-      promptVersion: "rag-v1",
-      latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
-      estimatedCostUsd: 0,
-      inputHash: sha256(request.question),
-      citationCount: citations.length,
-      metadata: {
-        sourceCount: sources.length,
-        candidateCount: candidates.length,
-        retrievalMode: "hybrid_mock"
+      authenticationRequired,
+      async (databaseSession) => {
+        const [created] = await this.#models.AiTrace.create(
+          [
+            {
+              userId,
+              feature: "rag-search",
+              provider: "mock-hybrid",
+              outcome: abstained ? "abstained" : "success",
+              promptVersion: "rag-v1",
+              latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+              estimatedCostUsd: 0,
+              inputHash: sha256(request.question),
+              citationCount: citations.length,
+              metadata: {
+                sourceCount: sources.length,
+                candidateCount: candidates.length,
+                retrievalMode: "hybrid_mock"
+              }
+            }
+          ],
+          { session: databaseSession }
+        );
+        if (created === undefined) throw new Error("RAG trace creation returned no record.");
+        return created;
       }
-    });
+    );
     return ragSearchResponseSchema.parse({
       answer,
       abstained,
@@ -1630,30 +1895,44 @@ export class LearningService {
         request.allowExternal &&
         profile.aiPrivacyMode === "ask_before_external"
     });
-    const trace = await this.#models.AiTrace.create({
+    const trace = await withActiveAccountWrite(
+      this.#models,
       userId,
-      feature: `coach:${request.action}`,
-      provider: generation.provider,
-      outcome: generation.outcome,
-      promptVersion: "coach-v1",
-      latencyMs: generation.latencyMs,
-      estimatedCostUsd: generation.estimatedCostUsd,
-      inputHash: sha256(
-        JSON.stringify({
-          action: request.action,
-          dayNumber: request.dayNumber,
-          learnerText: request.learnerText
-        })
-      ),
-      citationCount: 0,
-      metadata: {
-        externallyPermitted:
-          request.allowExternal && profile.aiPrivacyMode === "ask_before_external",
-        killSwitchActive: killSwitch?.enabled === true,
-        providerDetail: generation.detail,
-        providerFailureKind: generation.failureKind
+      authenticationRequired,
+      async (databaseSession) => {
+        const [created] = await this.#models.AiTrace.create(
+          [
+            {
+              userId,
+              feature: `coach:${request.action}`,
+              provider: generation.provider,
+              outcome: generation.outcome,
+              promptVersion: "coach-v1",
+              latencyMs: generation.latencyMs,
+              estimatedCostUsd: generation.estimatedCostUsd,
+              inputHash: sha256(
+                JSON.stringify({
+                  action: request.action,
+                  dayNumber: request.dayNumber,
+                  learnerText: request.learnerText
+                })
+              ),
+              citationCount: 0,
+              metadata: {
+                externallyPermitted:
+                  request.allowExternal && profile.aiPrivacyMode === "ask_before_external",
+                killSwitchActive: killSwitch?.enabled === true,
+                providerDetail: generation.detail,
+                providerFailureKind: generation.failureKind
+              }
+            }
+          ],
+          { session: databaseSession }
+        );
+        if (created === undefined) throw new Error("Coach trace creation returned no record.");
+        return created;
       }
-    });
+    );
     return coachResponseSchema.parse({
       generated: true,
       provider: generation.provider,
@@ -1752,7 +2031,7 @@ export class LearningService {
       const agentUnlocked =
         day.monthNumber >= 11 && this.#aiConfig.agentEnabled && flag?.enabled === true;
       const runId = new Types.ObjectId();
-      initialGraphState = createPlannerGraphState({
+      const proposedGraphState = createPlannerGraphState({
         runId: runId.toString(),
         userId,
         mode: agentUnlocked ? "bounded_agent" : "deterministic_workflow",
@@ -1760,29 +2039,58 @@ export class LearningService {
         approvalBehavior: "proposal_only",
         now: this.#now()
       });
-      run = await this.#models.AgentRun.create({
-        _id: runId,
+      run = await withActiveAccountWrite(
+        this.#models,
         userId,
-        graphVersion: initialGraphState.graphVersion,
-        graphState: initialGraphState,
-        mode: initialGraphState.mode,
-        status: "running",
-        actions: [],
-        budget: {
-          maxSteps: initialGraphState.budget.maxSteps,
-          stepsUsed: 0,
-          maxTokens: initialGraphState.budget.maxTokens,
-          tokensUsed: 0,
-          maxCostUsd: initialGraphState.budget.maxCostUsd,
-          estimatedCostUsd: 0,
-          maxWallTimeMs: initialGraphState.budget.maxWallTimeMs,
-          wallTimeMs: 0
-        },
-        terminalReason: "running",
-        trace: [],
-        operationKeys: [request.idempotencyKey],
-        approvedAt: null
-      });
+        authenticationRequired,
+        async (databaseSession) => {
+          const replay = await this.#models.AgentRun.findOne({
+            userId,
+            operationKeys: request.idempotencyKey
+          }).session(databaseSession);
+          if (replay !== null) return replay;
+          const [created] = await this.#models.AgentRun.create(
+            [
+              {
+                _id: runId,
+                userId,
+                graphVersion: proposedGraphState.graphVersion,
+                graphState: proposedGraphState,
+                mode: proposedGraphState.mode,
+                status: "running",
+                actions: [],
+                budget: {
+                  maxSteps: proposedGraphState.budget.maxSteps,
+                  stepsUsed: 0,
+                  maxTokens: proposedGraphState.budget.maxTokens,
+                  tokensUsed: 0,
+                  maxCostUsd: proposedGraphState.budget.maxCostUsd,
+                  estimatedCostUsd: 0,
+                  maxWallTimeMs: proposedGraphState.budget.maxWallTimeMs,
+                  wallTimeMs: 0
+                },
+                terminalReason: "running",
+                trace: [],
+                operationKeys: [request.idempotencyKey],
+                approvedAt: null
+              }
+            ],
+            { session: databaseSession }
+          );
+          if (created === undefined) throw new Error("Planner run creation returned no record.");
+          return created;
+        }
+      );
+      initialGraphState = parsePlannerGraphState(run.graphState);
+      if (initialGraphState.runId !== run.id || initialGraphState.userId !== userId) {
+        throw problem(
+          "planner-state-invalid",
+          "Planner state is invalid",
+          409,
+          "The persisted planner checkpoint does not belong to this run and account."
+        );
+      }
+      if (initialGraphState.status !== "running") return plannerValue(run);
     } else {
       initialGraphState = parsePlannerGraphState(run.graphState);
       if (initialGraphState.runId !== run.id || initialGraphState.userId !== userId) {
@@ -1860,8 +2168,13 @@ export class LearningService {
     request: PlannerDecisionRequest,
     decision: "approve" | "revise"
   ): Promise<PlannerRun> {
-    const run = await this.#models.AgentRun.findOne({ _id: runId, userId });
-    if (run === null) {
+    const claimOwnerId = new Types.ObjectId().toString();
+    const claimedAt = this.#now();
+    const leaseExpiresAt = new Date(claimedAt.getTime() + plannerDecisionLeaseMs);
+    const current = await this.#models.AgentRun.findOne({ _id: runId, userId }).select(
+      "+decisionClaim"
+    );
+    if (current === null) {
       throw problem(
         "planner-run-not-found",
         "Planner run not found",
@@ -1869,29 +2182,144 @@ export class LearningService {
         "The requested planner run is not available in this account."
       );
     }
-    if (run.operationKeys.includes(request.idempotencyKey)) return plannerValue(run);
-    if (run.status !== request.expectedStatus) {
-      throw problem(
-        "planner-run-conflict",
-        "Planner run conflict",
-        409,
-        "This plan is no longer awaiting approval."
-      );
+    if (
+      current.operationKeys.includes(request.idempotencyKey) &&
+      current.status !== "running" &&
+      (current.decisionClaim ?? null) === null
+    ) {
+      return plannerValue(current);
     }
-    const persistedGraphState = parsePlannerGraphState(run.graphState);
-    if (persistedGraphState.runId !== run.id || persistedGraphState.userId !== userId) {
-      throw problem(
-        "planner-state-invalid",
-        "Planner state is invalid",
-        409,
-        "The persisted planner checkpoint does not belong to this run and account."
-      );
-    }
-    const persistCheckpoint = async (checkpointState: PlannerGraphState): Promise<void> => {
-      await this.#models.AgentRun.updateOne(
-        { _id: run._id, userId },
+
+    const persistedGraphState = validatedPlannerGraphState(
+      current.graphState,
+      current._id.toString(),
+      userId
+    );
+    const checkpointId = latestPlannerCheckpointId(persistedGraphState);
+    const currentClaim = current.decisionClaim ?? null;
+    let run: typeof current | null;
+
+    if (currentClaim === null) {
+      if (
+        current.status !== request.expectedStatus ||
+        current.operationKeys.includes(request.idempotencyKey)
+      ) {
+        throw plannerRunConflict("This plan is no longer awaiting approval.");
+      }
+      if (persistedGraphState.status !== "awaiting_approval") {
+        throw problem(
+          "planner-state-invalid",
+          "Planner state is invalid",
+          409,
+          "The persisted planner graph is not awaiting the requested human decision."
+        );
+      }
+      run = await this.#models.AgentRun.findOneAndUpdate(
+        {
+          _id: current._id,
+          userId,
+          status: request.expectedStatus,
+          updatedAt: current.updatedAt,
+          operationKeys: { $ne: request.idempotencyKey },
+          $or: [{ decisionClaim: null }, { decisionClaim: { $exists: false } }]
+        },
         {
           $set: {
+            status: "running",
+            terminalReason: "running",
+            decisionClaim: {
+              idempotencyKey: request.idempotencyKey,
+              action: decision,
+              note: request.note,
+              ownerId: claimOwnerId,
+              checkpointId,
+              leasedAt: claimedAt,
+              leaseExpiresAt
+            }
+          },
+          $addToSet: { operationKeys: request.idempotencyKey }
+        },
+        { returnDocument: "after", runValidators: true }
+      ).select("+decisionClaim");
+    } else {
+      const claimMatchesRequest =
+        currentClaim.idempotencyKey === request.idempotencyKey &&
+        currentClaim.action === decision &&
+        currentClaim.note === request.note;
+      const graphCanResume =
+        persistedGraphState.decisionKeys.includes(request.idempotencyKey) ||
+        persistedGraphState.status === "awaiting_approval";
+      if (
+        current.status !== "running" ||
+        !claimMatchesRequest ||
+        !graphCanResume ||
+        currentClaim.checkpointId !== checkpointId ||
+        currentClaim.leaseExpiresAt.getTime() > claimedAt.getTime()
+      ) {
+        throw plannerRunConflict("This plan already has a different or active decision claim.");
+      }
+      run = await this.#models.AgentRun.findOneAndUpdate(
+        {
+          _id: current._id,
+          userId,
+          status: "running",
+          updatedAt: current.updatedAt,
+          operationKeys: request.idempotencyKey,
+          "decisionClaim.idempotencyKey": request.idempotencyKey,
+          "decisionClaim.action": decision,
+          "decisionClaim.note": request.note,
+          "decisionClaim.ownerId": currentClaim.ownerId,
+          "decisionClaim.checkpointId": checkpointId,
+          "decisionClaim.leaseExpiresAt": { $lte: claimedAt }
+        },
+        {
+          $set: {
+            "decisionClaim.ownerId": claimOwnerId,
+            "decisionClaim.leasedAt": claimedAt,
+            "decisionClaim.leaseExpiresAt": leaseExpiresAt
+          }
+        },
+        { returnDocument: "after", runValidators: true }
+      ).select("+decisionClaim");
+    }
+
+    if (run === null) {
+      const raced = await this.#models.AgentRun.findOne({ _id: runId, userId }).select(
+        "+decisionClaim"
+      );
+      if (
+        raced !== null &&
+        raced.operationKeys.includes(request.idempotencyKey) &&
+        raced.status !== "running" &&
+        (raced.decisionClaim ?? null) === null
+      ) {
+        return plannerValue(raced);
+      }
+      throw plannerRunConflict("This plan changed while the decision claim was being acquired.");
+    }
+
+    const persistCheckpoint = async (checkpointState: PlannerGraphState): Promise<void> => {
+      if (checkpointState.runId !== runId || checkpointState.userId !== userId) {
+        throw problem(
+          "planner-state-invalid",
+          "Planner state is invalid",
+          409,
+          "The planner attempted to persist a checkpoint outside this run and account."
+        );
+      }
+      const checkpointAt = this.#now();
+      const checkpoint = await this.#models.AgentRun.updateOne(
+        {
+          _id: run._id,
+          userId,
+          status: "running",
+          operationKeys: request.idempotencyKey,
+          "decisionClaim.idempotencyKey": request.idempotencyKey,
+          "decisionClaim.ownerId": claimOwnerId
+        },
+        {
+          $set: {
+            graphVersion: checkpointState.graphVersion,
             graphState: checkpointState,
             mode: checkpointState.mode,
             status: "running",
@@ -1907,40 +2335,104 @@ export class LearningService {
               wallTimeMs: checkpointState.budget.wallTimeMs
             },
             terminalReason: "running",
-            trace: plannerTrace(checkpointState)
+            trace: plannerTrace(checkpointState),
+            "decisionClaim.checkpointId": latestPlannerCheckpointId(checkpointState),
+            "decisionClaim.leaseExpiresAt": new Date(
+              checkpointAt.getTime() + plannerDecisionLeaseMs
+            )
           }
         }
       );
+      if (checkpoint.matchedCount !== 1) {
+        throw plannerRunConflict("The claimed planner decision could not persist its checkpoint.");
+      }
     };
-    const graphState = await applyPlannerHumanDecision(
-      persistedGraphState,
+    let graphState: PlannerGraphState;
+    try {
+      const dependencies = this.#plannerGraphDependencies(
+        userId,
+        persistedGraphState.request,
+        persistCheckpoint
+      );
+      if (persistedGraphState.decisionKeys.includes(request.idempotencyKey)) {
+        graphState =
+          persistedGraphState.status === "running"
+            ? await runPlannerGraph(persistedGraphState, dependencies)
+            : persistedGraphState;
+      } else {
+        graphState = await applyPlannerHumanDecision(
+          persistedGraphState,
+          {
+            action: decision,
+            idempotencyKey: request.idempotencyKey,
+            ...(request.note.length === 0 ? {} : { note: request.note })
+          },
+          dependencies
+        );
+      }
+    } catch (error: unknown) {
+      try {
+        await this.#models.AgentRun.updateOne(
+          {
+            _id: run._id,
+            userId,
+            status: "running",
+            "decisionClaim.idempotencyKey": request.idempotencyKey,
+            "decisionClaim.ownerId": claimOwnerId
+          },
+          {
+            $set: {
+              status: "cancelled",
+              terminalReason: "cancelled",
+              decisionClaim: null
+            }
+          }
+        );
+      } catch {
+        // Leave the bounded claim for stale-lease recovery when cleanup itself cannot persist.
+      }
+      throw error;
+    }
+
+    const finalStatus = plannerRecordStatus(graphState);
+    const finalized = await this.#models.AgentRun.findOneAndUpdate(
       {
-        action: decision,
-        idempotencyKey: request.idempotencyKey,
-        ...(request.note.length === 0 ? {} : { note: request.note })
+        _id: run._id,
+        userId,
+        status: "running",
+        operationKeys: request.idempotencyKey,
+        "decisionClaim.idempotencyKey": request.idempotencyKey,
+        "decisionClaim.ownerId": claimOwnerId
       },
-      this.#plannerGraphDependencies(userId, persistedGraphState.request, persistCheckpoint)
+      {
+        $set: {
+          graphVersion: graphState.graphVersion,
+          graphState,
+          mode: graphState.mode,
+          status: finalStatus,
+          actions: graphState.draft.map((action) => ({ ...action })),
+          budget: {
+            maxSteps: graphState.budget.maxSteps,
+            stepsUsed: graphState.budget.stepsUsed,
+            maxTokens: graphState.budget.maxTokens,
+            tokensUsed: graphState.budget.tokensUsed,
+            maxCostUsd: graphState.budget.maxCostUsd,
+            estimatedCostUsd: graphState.budget.estimatedCostUsd,
+            maxWallTimeMs: graphState.budget.maxWallTimeMs,
+            wallTimeMs: graphState.budget.wallTimeMs
+          },
+          terminalReason: plannerRecordTerminalReason(graphState),
+          trace: plannerTrace(graphState),
+          decisionClaim: null,
+          ...(finalStatus === "approved" ? { approvedAt: this.#now() } : {})
+        }
+      },
+      { returnDocument: "after", runValidators: true }
     );
-    run.graphState = graphState;
-    run.mode = graphState.mode;
-    run.status = plannerRecordStatus(graphState);
-    run.actions = graphState.draft.map((action) => ({ ...action }));
-    run.budget = {
-      maxSteps: graphState.budget.maxSteps,
-      stepsUsed: graphState.budget.stepsUsed,
-      maxTokens: graphState.budget.maxTokens,
-      tokensUsed: graphState.budget.tokensUsed,
-      maxCostUsd: graphState.budget.maxCostUsd,
-      estimatedCostUsd: graphState.budget.estimatedCostUsd,
-      maxWallTimeMs: graphState.budget.maxWallTimeMs,
-      wallTimeMs: graphState.budget.wallTimeMs
-    };
-    run.terminalReason = plannerRecordTerminalReason(graphState);
-    run.operationKeys.push(request.idempotencyKey);
-    run.trace = plannerTrace(graphState);
-    if (decision === "approve") run.approvedAt = this.#now();
-    await run.save();
-    return plannerValue(run);
+    if (finalized === null) {
+      throw plannerRunConflict("The claimed planner decision could not be finalized.");
+    }
+    return plannerValue(finalized);
   }
 
   async operations(userId: string): Promise<OperationsResponse> {
@@ -1962,27 +2454,41 @@ export class LearningService {
   async localEval(userId: string) {
     await this.#user(userId);
     const evaluation = await runLocalBehavioralEvaluation({ now: this.#now });
-    const run = await this.#models.EvalRun.create({
+    const run = await withActiveAccountWrite(
+      this.#models,
       userId,
-      datasetVersion: evaluation.dataset.version,
-      datasetHash: evaluation.dataset.hash,
-      evaluatorVersion: evaluation.evaluatorVersion,
-      providerConfig: evaluation.providerConfig,
-      passed: evaluation.passed,
-      score: evaluation.score,
-      passingScore: evaluation.passingScore,
-      criticalFailures: [...evaluation.criticalFailures],
-      negativeControlsPassed: evaluation.negativeControlsPassed,
-      durationMs: evaluation.durationMs,
-      estimatedCostUsd: evaluation.estimatedCostUsd,
-      cases: evaluation.cases.map((entry) => ({
-        ...entry,
-        input: { ...entry.input },
-        expectedAssertions: entry.expectedAssertions.map((assertion) => ({ ...assertion })),
-        observed: { ...entry.observed },
-        assertions: entry.assertions.map((assertion) => ({ ...assertion }))
-      }))
-    });
+      authenticationRequired,
+      async (databaseSession) => {
+        const [created] = await this.#models.EvalRun.create(
+          [
+            {
+              userId,
+              datasetVersion: evaluation.dataset.version,
+              datasetHash: evaluation.dataset.hash,
+              evaluatorVersion: evaluation.evaluatorVersion,
+              providerConfig: evaluation.providerConfig,
+              passed: evaluation.passed,
+              score: evaluation.score,
+              passingScore: evaluation.passingScore,
+              criticalFailures: [...evaluation.criticalFailures],
+              negativeControlsPassed: evaluation.negativeControlsPassed,
+              durationMs: evaluation.durationMs,
+              estimatedCostUsd: evaluation.estimatedCostUsd,
+              cases: evaluation.cases.map((entry) => ({
+                ...entry,
+                input: { ...entry.input },
+                expectedAssertions: entry.expectedAssertions.map((assertion) => ({ ...assertion })),
+                observed: { ...entry.observed },
+                assertions: entry.assertions.map((assertion) => ({ ...assertion }))
+              }))
+            }
+          ],
+          { session: databaseSession }
+        );
+        if (created === undefined) throw new Error("Local evaluation creation returned no record.");
+        return created;
+      }
+    );
     return localEvalResponseSchema.parse({ run: evalValue(run) });
   }
 

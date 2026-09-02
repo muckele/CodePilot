@@ -1,4 +1,4 @@
-FROM python:3.12.11-slim
+FROM python:3.12.11-slim AS build
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -6,10 +6,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /service
 
-COPY pyproject.toml ./
-COPY app ./app
+RUN python -m pip install --no-cache-dir uv==0.12.3
 
-RUN pip install --no-cache-dir .
+COPY pyproject.toml uv.lock ./
+COPY app ./app
+RUN uv sync --locked --no-dev --no-editable
+
+FROM python:3.12.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH=/service/.venv/bin:$PATH
+
+WORKDIR /service
+COPY --from=build --chown=65532:65532 /service/.venv /service/.venv
+COPY --from=build --chown=65532:65532 /service/app /service/app
 
 USER 65532:65532
 EXPOSE 8000

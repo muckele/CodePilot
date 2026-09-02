@@ -32,7 +32,13 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      grepInvert: /@mobile-webkit/u,
       use: { ...devices["Desktop Chrome"] }
+    },
+    {
+      name: "mobile-webkit",
+      grep: /@mobile-webkit/u,
+      use: { ...devices["iPhone 13"] }
     }
   ],
   webServer: [
@@ -45,6 +51,7 @@ export default defineConfig({
       stderr: "pipe",
       env: {
         NODE_ENV: "test",
+        REGISTRATION_MODE: "invite_only",
         API_PORT: "4000",
         WEB_ORIGIN: E2E_BASE_URL,
         PERSISTENCE_MODE: "required",
@@ -60,7 +67,8 @@ export default defineConfig({
       }
     },
     {
-      command: "pnpm --filter @codelift/web dev",
+      command:
+        "pnpm --filter @codelift/web build && pnpm --filter @codelift/web exec vite preview --host 127.0.0.1 --port 5173",
       url: E2E_BASE_URL,
       timeout: 120_000,
       reuseExistingServer: false,

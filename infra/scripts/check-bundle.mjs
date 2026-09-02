@@ -290,8 +290,8 @@ const gzipBudgetBytes = 200 * 1024;
 if (gzipBytes > gzipBudgetBytes) {
   issues.push(`JavaScript gzip total ${gzipBytes} exceeds ${gzipBudgetBytes} bytes`);
 }
-if (sourceMapFiles.length === 0) {
-  issues.push("No production JavaScript source map was available for seed-exclusion inspection.");
+if (sourceMapFiles.length > 0) {
+  issues.push("Production JavaScript source maps must not be emitted or served publicly.");
 }
 if (importGraph.unresolvedImports.length > 0) {
   issues.push(
@@ -322,7 +322,6 @@ if (!negativeControlPassed) {
 }
 
 const canonicalSeedExcluded =
-  sourceMapFiles.length > 0 &&
   seedFindings.length === 0 &&
   importGraph.forbiddenImports.length === 0 &&
   importGraph.unresolvedImports.length === 0;

@@ -4,6 +4,7 @@ import { HTTP_LIMITS } from "@codelift/config";
 
 export type ApiEnvironment = "development" | "test" | "production";
 export type PersistenceMode = "optional" | "required";
+export type RegistrationMode = "closed" | "invite_only" | "open";
 
 export interface PersistenceConfig {
   readonly mode: PersistenceMode;
@@ -17,6 +18,12 @@ export interface SessionConfig {
   readonly secureCookie: boolean;
   readonly idleTtlMs: number;
   readonly absoluteTtlMs: number;
+}
+
+export interface RegistrationConfig {
+  readonly mode: RegistrationMode;
+  readonly invitationTtlMs: number;
+  readonly passwordResetTtlMs: number;
 }
 
 export type AiProvider = "mock" | "python_mock" | "openai" | "local";
@@ -43,6 +50,7 @@ export interface ApiConfig {
   readonly jsonBodyLimit: typeof HTTP_LIMITS.jsonBody;
   readonly persistence: PersistenceConfig;
   readonly session: SessionConfig;
+  readonly registration: RegistrationConfig;
   readonly ai: AiConfig;
 }
 
@@ -75,7 +83,20 @@ function parsePort(value: string | undefined): number {
   return port;
 }
 
-function parseWebOrigin(value: string | undefined): string {
+function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname === "::1" ||
+    hostname === "[::1]" ||
+    /^127(?:\.\d{1,3}){3}$/.test(hostname)
+  );
+}
+
+function parseWebOrigin(value: string | undefined, nodeEnv: ApiEnvironment): string {
+  if (nodeEnv === "production" && (value === undefined || value.trim() === "")) {
+    throw new Error("WEB_ORIGIN is required in production and must be the exact HTTPS origin.");
+  }
+
   const candidate = value ?? "http://localhost:5173";
   let parsed: URL;
 
@@ -94,6 +115,14 @@ function parseWebOrigin(value: string | undefined): string {
     parsed.hash !== ""
   ) {
     throw new Error("WEB_ORIGIN must be an absolute HTTP or HTTPS origin.");
+  }
+
+  if (nodeEnv === "production" && parsed.protocol !== "https:") {
+    throw new Error("WEB_ORIGIN must use HTTPS in production.");
+  }
+
+  if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
+    throw new Error("HTTP WEB_ORIGIN is permitted only for a loopback development or test host.");
   }
 
   return parsed.origin;
@@ -148,6 +177,39 @@ function createSessionConfig(nodeEnv: ApiEnvironment): SessionConfig {
     secureCookie,
     idleTtlMs: 7 * 24 * 60 * 60 * 1000,
     absoluteTtlMs: 30 * 24 * 60 * 60 * 1000
+  };
+}
+
+function parseRegistrationMode(
+  value: string | undefined,
+  nodeEnv: ApiEnvironment
+): RegistrationMode {
+  if (nodeEnv === "test" && value === undefined) {
+    throw new Error("REGISTRATION_MODE must be explicit in the test environment.");
+  }
+
+  const candidate = value ?? (nodeEnv === "production" ? "invite_only" : "open");
+  if (candidate !== "closed" && candidate !== "invite_only" && candidate !== "open") {
+    throw new Error("REGISTRATION_MODE must be closed, invite_only, or open.");
+  }
+
+  if (nodeEnv === "production" && candidate === "open") {
+    throw new Error(
+      "Open production registration requires a future verified email and secure self-service recovery implementation."
+    );
+  }
+
+  return candidate;
+}
+
+function createRegistrationConfig(
+  environment: NodeJS.ProcessEnv,
+  nodeEnv: ApiEnvironment
+): RegistrationConfig {
+  return {
+    mode: parseRegistrationMode(environment.REGISTRATION_MODE, nodeEnv),
+    invitationTtlMs: 7 * 24 * 60 * 60 * 1_000,
+    passwordResetTtlMs: 60 * 60 * 1_000
   };
 }
 
@@ -210,13 +272,21 @@ function parseBoundedInteger(
   return parsed;
 }
 
+function parseTrustProxyHops(value: string | undefined, nodeEnv: ApiEnvironment): number {
+  if (nodeEnv === "production" && value === undefined) {
+    throw new Error("TRUST_PROXY_HOPS is required in production.");
+  }
+
+  return parseBoundedInteger(value, 0, 0, 2, "TRUST_PROXY_HOPS");
+}
+
 function optionalSecret(value: string | undefined): string | null {
   const candidate = value?.trim();
   return candidate === undefined || candidate === "" ? null : candidate;
 }
 
-function createAiConfig(environment: NodeJS.ProcessEnv): AiConfig {
-  return {
+function createAiConfig(environment: NodeJS.ProcessEnv, nodeEnv: ApiEnvironment): AiConfig {
+  const config: AiConfig = {
     provider: parseAiProvider(environment.AI_PROVIDER),
     pythonBaseUrl: parseServiceUrl(
       environment.AI_PYTHON_BASE_URL,
@@ -240,25 +310,65 @@ function createAiConfig(environment: NodeJS.ProcessEnv): AiConfig {
     externalEnabled: parseBoolean(environment.AI_EXTERNAL_ENABLED),
     agentEnabled: parseBoolean(environment.AI_AGENT_ENABLED)
   };
+
+  if (config.provider === "openai") {
+    if (new URL(config.openAiBaseUrl).protocol !== "https:") {
+      throw new Error("OPENAI_BASE_URL must use HTTPS when AI_PROVIDER=openai.");
+    }
+    if (!config.externalEnabled) {
+      throw new Error("AI_EXTERNAL_ENABLED must be true when AI_PROVIDER=openai.");
+    }
+    if (config.openAiModel === null) {
+      throw new Error("OPENAI_MODEL is required when AI_PROVIDER=openai.");
+    }
+    if (config.openAiApiKey === null) {
+      throw new Error("OPENAI_API_KEY is required when AI_PROVIDER=openai.");
+    }
+  }
+
+  if (nodeEnv === "production") {
+    if (config.provider !== "mock") {
+      throw new Error("Production private-pilot requires AI_PROVIDER=mock.");
+    }
+    if (config.externalEnabled) {
+      throw new Error("Production private-pilot requires AI_EXTERNAL_ENABLED=false.");
+    }
+    if (config.agentEnabled) {
+      throw new Error("Production private-pilot requires AI_AGENT_ENABLED=false.");
+    }
+  }
+
+  return config;
 }
 
 export function loadApiConfig(environment: NodeJS.ProcessEnv = process.env): ApiConfig {
   const nodeEnv = parseEnvironment(environment.NODE_ENV);
+  const webOrigin = parseWebOrigin(environment.WEB_ORIGIN, nodeEnv);
+  const persistenceMode = parsePersistenceMode(environment.PERSISTENCE_MODE, nodeEnv);
+  const mongoUri = parseMongoUri(environment.MONGO_URI);
+
+  if (nodeEnv === "production" && persistenceMode !== "required") {
+    throw new Error("PERSISTENCE_MODE must be required in production.");
+  }
+  if (nodeEnv === "production" && mongoUri === null) {
+    throw new Error("MONGO_URI is required in production.");
+  }
 
   return {
     nodeEnv,
     port: parsePort(environment.API_PORT),
-    trustProxyHops: parseBoundedInteger(environment.TRUST_PROXY_HOPS, 0, 0, 2, "TRUST_PROXY_HOPS"),
-    webOrigin: parseWebOrigin(environment.WEB_ORIGIN),
+    trustProxyHops: parseTrustProxyHops(environment.TRUST_PROXY_HOPS, nodeEnv),
+    webOrigin,
     curriculumPath: parseCurriculumPath(environment.CURRICULUM_PATH),
     jsonBodyLimit: HTTP_LIMITS.jsonBody,
     persistence: {
-      mode: parsePersistenceMode(environment.PERSISTENCE_MODE, nodeEnv),
-      mongoUri: parseMongoUri(environment.MONGO_URI),
+      mode: persistenceMode,
+      mongoUri,
       databaseName: parseDatabaseName(environment.MONGO_DB_NAME),
       serverSelectionTimeoutMs: 3_000
     },
     session: createSessionConfig(nodeEnv),
-    ai: createAiConfig(environment)
+    registration: createRegistrationConfig(environment, nodeEnv),
+    ai: createAiConfig(environment, nodeEnv)
   };
 }

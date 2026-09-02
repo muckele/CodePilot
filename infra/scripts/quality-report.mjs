@@ -3,6 +3,8 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
+import { fullSourceStatusArguments, releaseSourceState } from "./release-source-state.mjs";
+
 const root = process.cwd();
 const reportPath = path.join(root, "reports", "release-quality.json");
 const qualityStartedAtMs = Date.now();
@@ -31,6 +33,10 @@ const requiredCommands = [
   { id: "mcp:check", script: "mcp:check" },
   { id: "security:check", script: "security:check" },
   { id: "security:audit", script: "security:audit" },
+  { id: "python:lock-check", script: "python:lock-check" },
+  { id: "python:audit", script: "python:audit" },
+  { id: "image:audit", script: "image:audit" },
+  { id: "mvp:check", script: "mvp:check" },
   { id: "performance:check", script: "performance:check" },
   { id: "compose:check", script: "compose:check" },
   { id: "compose:smoke", script: "compose:smoke" },
@@ -49,43 +55,13 @@ const criticalCommandSet = new Set([
   "curriculum:validate",
   "eval:local",
   "security:check",
+  "python:lock-check",
+  "python:audit",
+  "image:audit",
+  "mvp:check",
   "compose:smoke",
   "fresh-clone:check"
 ]);
-
-await mkdir(path.dirname(reportPath), { recursive: true });
-
-const commandResults = requiredCommands.map(({ id, script, argumentsValue = [script] }) => {
-  const startedAt = Date.now();
-  if (pnpmCli === undefined || pnpmCli.trim() === "") {
-    return {
-      id,
-      script,
-      command: `pnpm ${argumentsValue.join(" ")}`,
-      status: "failed",
-      exitCode: null,
-      durationMs: Date.now() - startedAt,
-      stdoutTail: "",
-      stderrTail: "npm_execpath is unavailable; the pinned pnpm runtime cannot be verified."
-    };
-  }
-  const result = spawnSync(process.execPath, [pnpmCli, ...argumentsValue], {
-    cwd: root,
-    encoding: "utf8",
-    env: process.env,
-    maxBuffer: 15 * 1024 * 1024
-  });
-  return {
-    id,
-    script,
-    command: `pnpm ${argumentsValue.join(" ")}`,
-    status: result.status === 0 ? "passed" : "failed",
-    exitCode: result.status,
-    durationMs: Date.now() - startedAt,
-    stdoutTail: (result.stdout ?? "").slice(-4_000),
-    stderrTail: (result.stderr ?? "").slice(-4_000)
-  };
-});
 
 function commandOutput(executable, argumentsValue) {
   const result = spawnSync(executable, argumentsValue, {
@@ -96,9 +72,56 @@ function commandOutput(executable, argumentsValue) {
   return result.status === 0 ? (result.stdout ?? "").trim() : null;
 }
 
-const sourceRevision = commandOutput("git", ["rev-parse", "HEAD"]);
-const sourceStatus = commandOutput("git", ["status", "--porcelain=v1"]);
-const sourceClean = sourceStatus === "";
+const sourceStartRevision = commandOutput("git", ["rev-parse", "HEAD"]);
+const sourceStartStatus = commandOutput("git", fullSourceStatusArguments);
+const sourceStartedClean = sourceStartRevision !== null && sourceStartStatus === "";
+
+await mkdir(path.dirname(reportPath), { recursive: true });
+
+const commandResults = (sourceStartedClean ? requiredCommands : []).map(
+  ({ id, script, argumentsValue = [script] }) => {
+    const startedAt = Date.now();
+    if (pnpmCli === undefined || pnpmCli.trim() === "") {
+      return {
+        id,
+        script,
+        command: `pnpm ${argumentsValue.join(" ")}`,
+        status: "failed",
+        exitCode: null,
+        durationMs: Date.now() - startedAt,
+        stdoutTail: "",
+        stderrTail: "npm_execpath is unavailable; the pinned pnpm runtime cannot be verified."
+      };
+    }
+    const result = spawnSync(process.execPath, [pnpmCli, ...argumentsValue], {
+      cwd: root,
+      encoding: "utf8",
+      env: process.env,
+      maxBuffer: 15 * 1024 * 1024
+    });
+    return {
+      id,
+      script,
+      command: `pnpm ${argumentsValue.join(" ")}`,
+      status: result.status === 0 ? "passed" : "failed",
+      exitCode: result.status,
+      durationMs: Date.now() - startedAt,
+      stdoutTail: (result.stdout ?? "").slice(-4_000),
+      stderrTail: (result.stderr ?? "").slice(-4_000)
+    };
+  }
+);
+
+const sourceEndRevision = commandOutput("git", ["rev-parse", "HEAD"]);
+const sourceEndStatus = commandOutput("git", fullSourceStatusArguments);
+const sourceState = releaseSourceState({
+  startRevision: sourceStartRevision,
+  startStatus: sourceStartStatus,
+  endRevision: sourceEndRevision,
+  endStatus: sourceEndStatus
+});
+const sourceRevision = sourceStartRevision;
+const sourceClean = sourceState.valid;
 const pnpmVersion =
   pnpmCli === undefined || pnpmCli.trim() === ""
     ? null
@@ -446,12 +469,27 @@ const categories = [
     name: "Security and privacy",
     maximum: 10,
     earned:
-      all("security:check", "security:audit", "test:integration", "test:e2e") &&
-      securityStructuralEvidenceValid
+      all(
+        "security:check",
+        "security:audit",
+        "python:lock-check",
+        "python:audit",
+        "image:audit",
+        "mvp:check",
+        "test:integration",
+        "test:e2e"
+      ) && securityStructuralEvidenceValid
         ? 10
         : 0,
     evidence: {
-      staticStructuralCommands: ["security:check", "security:audit"],
+      staticStructuralCommands: [
+        "security:check",
+        "security:audit",
+        "python:lock-check",
+        "python:audit",
+        "image:audit",
+        "mvp:check"
+      ],
       behavioralCommands: ["test:integration", "test:e2e"],
       staticEvidenceKind: security?.evidenceKind ?? null,
       staticEvidenceBoundary: security?.evidenceBoundary ?? null,
@@ -562,6 +600,10 @@ const report = {
   source: {
     revision: sourceRevision,
     clean: sourceClean,
+    startClean: sourceState.startClean,
+    endClean: sourceState.endClean,
+    revisionStable: sourceState.revisionStable,
+    endRevision: sourceEndRevision,
     toolchain: { node: process.version, pnpm: pnpmVersion },
     qualityStartedAt: new Date(qualityStartedAtMs).toISOString()
   },

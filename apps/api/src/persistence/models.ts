@@ -6,7 +6,9 @@ export interface UserRecord {
   email: string;
   passwordHash: string;
   profile: OnboardingProfile | null;
+  onboardedAt: Date | null;
   schemaVersion: number;
+  writeFence: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -21,6 +23,47 @@ export interface SessionRecord {
   absoluteExpiresAt: Date;
   expiresAt: Date;
   schemaVersion: number;
+}
+
+export interface InvitationRecord {
+  tokenHash: string;
+  purpose: "registration";
+  email: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  revokedAt: Date | null;
+  consumedByUserId: Types.ObjectId | null;
+  createdBy: string;
+  createdAt: Date;
+}
+
+export interface PasswordResetRecord {
+  tokenHash: string;
+  purpose: "password_reset";
+  userId: Types.ObjectId;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  revokedAt: Date | null;
+  createdBy: string;
+  createdAt: Date;
+}
+
+export interface PilotAggregateRecord {
+  date: string;
+  event: "account_export_succeeded" | "account_deletion_succeeded";
+  count: number;
+  expiresAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface UserActivityRecord {
+  userId: Types.ObjectId;
+  date: string;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface EvidenceRecord {
@@ -84,6 +127,10 @@ export interface ReflectionRecord {
 export interface CodeLiftModels extends ProductModels {
   readonly User: Model<UserRecord>;
   readonly Session: Model<SessionRecord>;
+  readonly Invitation: Model<InvitationRecord>;
+  readonly PasswordReset: Model<PasswordResetRecord>;
+  readonly PilotAggregate: Model<PilotAggregateRecord>;
+  readonly UserActivity: Model<UserActivityRecord>;
   readonly Progress: Model<ProgressRecord>;
   readonly Reflection: Model<ReflectionRecord>;
 }
@@ -154,10 +201,20 @@ const userSchema = new Schema<UserRecord>(
       type: onboardingProfileSchema,
       default: null
     },
+    onboardedAt: {
+      type: Date,
+      default: null
+    },
     schemaVersion: {
       type: Number,
       required: true,
       default: 1
+    },
+    writeFence: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: 0
     }
   },
   {
@@ -205,6 +262,73 @@ const sessionSchema = new Schema<SessionRecord>(
     versionKey: false
   }
 );
+
+const invitationSchema = new Schema<InvitationRecord>(
+  {
+    tokenHash: { type: String, required: true, unique: true, index: true, select: false },
+    purpose: { type: String, required: true, enum: ["registration"] },
+    email: { type: String, required: true, maxlength: 254, index: true },
+    expiresAt: { type: Date, required: true },
+    consumedAt: { type: Date, default: null },
+    revokedAt: { type: Date, default: null },
+    consumedByUserId: { type: Schema.Types.ObjectId, ref: "User", default: null, index: true },
+    createdBy: { type: String, required: true, maxlength: 80 }
+  },
+  { timestamps: { createdAt: true, updatedAt: false }, strict: "throw", versionKey: false }
+);
+invitationSchema.index({ email: 1, expiresAt: 1 });
+invitationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 });
+
+const passwordResetSchema = new Schema<PasswordResetRecord>(
+  {
+    tokenHash: { type: String, required: true, unique: true, index: true, select: false },
+    purpose: { type: String, required: true, enum: ["password_reset"] },
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    expiresAt: { type: Date, required: true },
+    consumedAt: { type: Date, default: null },
+    revokedAt: { type: Date, default: null },
+    createdBy: { type: String, required: true, maxlength: 80 }
+  },
+  { timestamps: { createdAt: true, updatedAt: false }, strict: "throw", versionKey: false }
+);
+passwordResetSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60 });
+
+const pilotAggregateSchema = new Schema<PilotAggregateRecord>(
+  {
+    date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+    event: {
+      type: String,
+      required: true,
+      enum: ["account_export_succeeded", "account_deletion_succeeded"]
+    },
+    count: { type: Number, required: true, min: 0 },
+    expiresAt: {
+      type: Date,
+      required: true,
+      default: () => new Date(Date.now() + 400 * 24 * 60 * 60 * 1_000)
+    }
+  },
+  { timestamps: true, strict: "throw", versionKey: false }
+);
+pilotAggregateSchema.index({ date: 1, event: 1 }, { unique: true });
+pilotAggregateSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+const userActivitySchema = new Schema<UserActivityRecord>(
+  {
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true
+    },
+    date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+    firstSeenAt: { type: Date, required: true },
+    lastSeenAt: { type: Date, required: true }
+  },
+  { timestamps: true, strict: "throw", versionKey: false }
+);
+userActivitySchema.index({ userId: 1, date: 1 }, { unique: true });
+userActivitySchema.index({ firstSeenAt: 1 });
 
 const evidenceSchema = new Schema<EvidenceRecord>(
   {
@@ -392,6 +516,10 @@ export function createModels(connection: Connection): CodeLiftModels {
     ...createProductModels(connection),
     User: connection.model<UserRecord>("User", userSchema),
     Session: connection.model<SessionRecord>("Session", sessionSchema),
+    Invitation: connection.model<InvitationRecord>("Invitation", invitationSchema),
+    PasswordReset: connection.model<PasswordResetRecord>("PasswordReset", passwordResetSchema),
+    PilotAggregate: connection.model<PilotAggregateRecord>("PilotAggregate", pilotAggregateSchema),
+    UserActivity: connection.model<UserActivityRecord>("UserActivity", userActivitySchema),
     Progress: connection.model<ProgressRecord>("ProgressLog", progressSchema),
     Reflection: connection.model<ReflectionRecord>("Reflection", reflectionSchema)
   };

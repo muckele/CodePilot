@@ -12,15 +12,29 @@ export interface RequestLogRecord {
 
 export interface StructuredRequestLogger {
   info(record: RequestLogRecord): void;
+  error?(record: ServerErrorLogRecord): void;
+}
+
+export interface ServerErrorLogRecord {
+  readonly event: "http.server_error";
+  readonly requestId: string;
+  readonly method: string;
+  readonly route: string;
+  readonly statusCode: 500;
+  readonly errorName: string;
+  readonly durationMs: number;
 }
 
 export const standardRequestLogger: StructuredRequestLogger = {
   info(record) {
     process.stdout.write(`${JSON.stringify(record)}\n`);
+  },
+  error(record) {
+    process.stderr.write(`${JSON.stringify(record)}\n`);
   }
 };
 
-function normalizedRoute(request: Request): string {
+export function normalizedRoute(request: Request): string {
   const routePath = request.route?.path;
 
   if (typeof routePath !== "string") {
@@ -38,6 +52,7 @@ export const assignRequestId: RequestHandler = (_request, response, next) => {
 export function logRequests(logger: StructuredRequestLogger): RequestHandler {
   return (request, response, next) => {
     const startedAt = process.hrtime.bigint();
+    response.locals.requestStartedAt = startedAt;
 
     response.once("finish", () => {
       const elapsedNanoseconds = process.hrtime.bigint() - startedAt;
@@ -56,4 +71,10 @@ export function logRequests(logger: StructuredRequestLogger): RequestHandler {
 
     next();
   };
+}
+
+export function requestDurationMs(startedAt: unknown): number {
+  if (typeof startedAt !== "bigint") return 0;
+  const elapsedNanoseconds = process.hrtime.bigint() - startedAt;
+  return Math.round((Number(elapsedNanoseconds) / 1_000_000) * 1_000) / 1_000;
 }

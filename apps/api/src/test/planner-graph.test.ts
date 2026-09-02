@@ -125,6 +125,12 @@ function initial(
 }
 
 describe("bounded planner graph", () => {
+  it("round-trips the initial persisted state before evidence gathering", () => {
+    const state = initial();
+
+    expect(parsePlannerGraphState(structuredClone(state))).toEqual(state);
+  });
+
   it("validates persisted graph state at the runtime boundary", async () => {
     const testHarness = harness();
     const valid = await runPlannerGraph(initial(), testHarness.dependencies);

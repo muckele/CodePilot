@@ -46,6 +46,53 @@ interface Provider {
   generate(context: CoachContext): Promise<CoachPayload>;
 }
 
+const PROVIDER_RESPONSE_MAX_BYTES = 64 * 1_024;
+
+class ProviderResponseSizeError extends Error {
+  constructor() {
+    super(`Provider response exceeded ${PROVIDER_RESPONSE_MAX_BYTES} bytes.`);
+    this.name = "ProviderResponseSizeError";
+  }
+}
+
+async function readBoundedProviderBody(response: Response): Promise<string> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null && /^\d+$/.test(declaredLength)) {
+    const parsedLength = Number(declaredLength);
+    if (Number.isSafeInteger(parsedLength) && parsedLength > PROVIDER_RESPONSE_MAX_BYTES) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new ProviderResponseSizeError();
+    }
+  }
+
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > PROVIDER_RESPONSE_MAX_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new ProviderResponseSizeError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+}
+
 const structuredCoachJsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -113,17 +160,17 @@ async function fetchJson(
         ...init,
         signal: AbortSignal.timeout(timeoutMs)
       });
+      const body = await readBoundedProviderBody(response);
       if (!response.ok) {
-        const body = (await response.text()).slice(0, 500);
-        const error = new Error(`Provider returned HTTP ${response.status}: ${body}`);
+        const error = new Error(`Provider returned HTTP ${response.status}: ${body.slice(0, 500)}`);
         if (response.status < 500 || attempt === retries) throw error;
         lastError = error;
         continue;
       }
-      return await response.json();
+      return JSON.parse(body) as unknown;
     } catch (error: unknown) {
       lastError = error;
-      if (attempt === retries) break;
+      if (error instanceof ProviderResponseSizeError || attempt === retries) break;
     }
   }
   throw lastError;
@@ -290,6 +337,7 @@ class OpenAiProvider implements Provider {
           Authorization: `Bearer ${this.config.openAiApiKey}`,
           "Content-Type": "application/json"
         },
+        redirect: "error",
         body: JSON.stringify({
           model: this.config.openAiModel,
           store: false,

@@ -17,9 +17,10 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build:packages && pnpm --filter @codelift/web build
 
-FROM nginx:1.29.5-alpine
+FROM nginxinc/nginx-unprivileged:1.29.5-alpine
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
+USER 101:101
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
   CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1

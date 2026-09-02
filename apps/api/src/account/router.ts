@@ -4,11 +4,13 @@ import {
   deleteAccountRequestSchema,
   loginRequestSchema,
   meResponseSchema,
+  mvpConfigurationResponseSchema,
   onboardingRequestSchema,
   onboardingResponseSchema,
   progressEvidenceRequestSchema,
   progressReflectionRequestSchema,
   progressStatusRequestSchema,
+  passwordResetRequestSchema,
   registerRequestSchema
 } from "@codelift/contracts";
 import { parseCookie, stringifySetCookie } from "cookie";
@@ -202,6 +204,17 @@ export function createAccountRouter(options: {
     next();
   });
 
+  router.get("/config", (_request, response) => {
+    response.status(200).json(
+      mvpConfigurationResponseSchema.parse({
+        registrationMode: options.config.registration.mode,
+        aiProvider: options.config.ai.provider,
+        externalAiEnabled: options.config.ai.externalEnabled,
+        agentEnabled: options.config.ai.agentEnabled
+      })
+    );
+  });
+
   if (options.runtime.status !== "ready") {
     router.use((_request, response) => {
       accountUnavailable(response);
@@ -235,6 +248,20 @@ export function createAccountRouter(options: {
         title: "Too many attempts",
         status: 429,
         detail: "Wait before requesting another browser session."
+      });
+    }
+  });
+  const resetLimiter = rateLimit({
+    windowMs: 15 * 60 * 1_000,
+    limit: 10,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler(_request, response) {
+      sendProblem(response, {
+        type: "https://codelift.ai/problems/rate-limit-exceeded",
+        title: "Too many attempts",
+        status: 429,
+        detail: "Wait before trying another recovery link."
       });
     }
   });
@@ -289,7 +316,12 @@ export function createAccountRouter(options: {
     asyncHandler(async (request, response) => {
       const identity = await verifiedIdentity(request);
       const input = parseBody(registerRequestSchema, request.body);
-      const result = await service.register(identity, input.email, input.password);
+      const result = await service.register(
+        identity,
+        input.email,
+        input.password,
+        input.invitationToken
+      );
       setSessionCookie(response, options.config, result.sessionToken, result.expiresAt);
       response.status(201).json(
         authSessionResponseSchema.parse({
@@ -316,6 +348,18 @@ export function createAccountRouter(options: {
           csrfToken: result.csrfToken
         })
       );
+    })
+  );
+
+  router.post(
+    "/auth/reset-password",
+    resetLimiter,
+    asyncHandler(async (request, response) => {
+      await verifiedIdentity(request);
+      const input = parseBody(passwordResetRequestSchema, request.body);
+      await service.resetPassword(input.token, input.password);
+      clearSessionCookie(response, options.config);
+      response.status(204).end();
     })
   );
 
@@ -371,6 +415,32 @@ export function createAccountRouter(options: {
       const authenticated = await service.authenticate(cookieToken(request, options.config));
       const result = await service.today(authenticated.identity.userId ?? "");
       response.status(200).json(result);
+    })
+  );
+
+  router.get(
+    "/me/export",
+    asyncHandler(async (request, response) => {
+      const identity = await privateIdentity(request);
+      const exported = await service.exportAccount(identity.userId ?? "");
+      const body = `${JSON.stringify(exported, null, 2)}\n`;
+      if (Buffer.byteLength(body, "utf8") > 10 * 1_024 * 1_024) {
+        throw new HttpProblem({
+          type: "https://codelift.ai/problems/export-too-large",
+          title: "Account export too large",
+          status: 413,
+          detail:
+            "The bounded private-pilot export exceeded 10 MiB. Contact support for an isolated export."
+        });
+      }
+      await service.recordPilotEvent("account_export_succeeded");
+      response.setHeader("Content-Type", "application/json; charset=utf-8");
+      response.setHeader(
+        "Content-Disposition",
+        `attachment; filename="codelift-account-export-${new Date().toISOString().slice(0, 10)}.json"`
+      );
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.status(200).send(body);
     })
   );
 

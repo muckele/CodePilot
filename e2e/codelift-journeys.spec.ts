@@ -1,8 +1,9 @@
 import { writeFile } from "node:fs/promises";
 
 import { expect, test, type Page } from "@playwright/test";
+import { AxeBuilder } from "@axe-core/playwright";
 
-import { userOwnedCounts } from "./support/database.js";
+import { issueE2eInvitation, userOwnedCounts } from "./support/database.js";
 import { E2E_BASE_URL } from "./support/environment.js";
 import {
   accountFor,
@@ -17,6 +18,20 @@ import {
 } from "./support/journey.js";
 
 const browserErrors = new WeakMap<Page, string[]>();
+
+async function expectNoCriticalAccessibilityViolations(page: Page, route: string) {
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(
+    results.violations.map((violation) => ({
+      id: violation.id,
+      impact: violation.impact,
+      nodes: violation.nodes.map((node) => node.target)
+    })),
+    `${route} accessibility violations`
+  ).toEqual([]);
+}
 
 async function horizontalOverflowMeasurement(page: Page) {
   return page.evaluate(() => {
@@ -528,6 +543,8 @@ test("8. account deletion removes product records and derived indexed chunks", a
   expect(await userOwnedCounts(userId)).toEqual({
     user: 0,
     sessions: 0,
+    invitations: 0,
+    passwordResets: 0,
     progress: 0,
     reflections: 0,
     xpEvents: 0,
@@ -751,6 +768,61 @@ test("10. release visual and accessibility evidence covers responsive, theme, mo
       path: evidencePath,
       contentType: "application/json"
     });
+  } finally {
+    await deleteAccountThroughProduct(page, account);
+  }
+});
+
+test("11. automated accessibility scans cover every private-pilot critical flow", async ({
+  page
+}, testInfo) => {
+  const account = accountFor(testInfo, "axe-critical-flows");
+  const invitation = await issueE2eInvitation(account.email);
+  const publicRoutes = [
+    "/login",
+    `/register#invite=${invitation}`,
+    "/privacy",
+    "/terms",
+    "/support"
+  ];
+  for (const route of publicRoutes) {
+    await page.goto(route);
+    await expect(page.locator("h1")).toHaveCount(1);
+    await expectNoCriticalAccessibilityViolations(page, route.split("?", 1)[0] ?? route);
+  }
+
+  await page.goto(`/reset-password#token=${"r".repeat(43)}`);
+  await expect(page.getByRole("heading", { name: "Choose a new password" })).toBeVisible();
+  await expectNoCriticalAccessibilityViolations(page, "/reset-password");
+
+  try {
+    await provisionAccount(page, account);
+    for (const route of ["/app/today", "/app/account", "/app/account/delete"]) {
+      await page.goto(route);
+      await expect(page.locator("h1")).toHaveCount(1);
+      await expectNoCriticalAccessibilityViolations(page, route);
+    }
+  } finally {
+    await deleteAccountThroughProduct(page, account);
+  }
+});
+
+test("12. @mobile-webkit invitation cookie, Today, logout, and return smoke", async ({
+  page
+}, testInfo) => {
+  const account = accountFor(testInfo, "mobile-webkit");
+  try {
+    await provisionAccount(page, account);
+    await page.goto("/app/today");
+    await expect(page.getByRole("heading", { name: "Today’s mission" })).toBeVisible();
+    await page.goto("/app/account");
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect(page).toHaveURL((url) => url.pathname === "/login");
+    await page.getByLabel("Email address", { exact: true }).fill(account.email);
+    await page.getByLabel("Password", { exact: true }).fill(account.password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page).toHaveURL(/\/app\/today$/u);
+    await expect(page.getByRole("heading", { name: "Today’s mission" })).toBeVisible();
   } finally {
     await deleteAccountThroughProduct(page, account);
   }

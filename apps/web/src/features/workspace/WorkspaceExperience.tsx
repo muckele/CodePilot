@@ -72,21 +72,31 @@ function WorkspaceIntro({
   );
 }
 
-function Loading({ label }: { label: string }) {
+function Loading({ label, headingLevel = 1 }: { label: string; headingLevel?: 1 | 2 }) {
+  const Heading = headingLevel === 1 ? "h1" : "h2";
   return (
     <section className="mission-card workspace-state" role="status">
       <span className="state-orb" aria-hidden="true" />
-      <h1>Loading {label}…</h1>
+      <Heading>Loading {label}…</Heading>
       <p>Private data appears only after the protected request succeeds.</p>
     </section>
   );
 }
 
-function LoadError({ message, retry }: { message: string; retry: () => void }) {
+function LoadError({
+  message,
+  retry,
+  headingLevel = 1
+}: {
+  message: string;
+  retry: () => void;
+  headingLevel?: 1 | 2;
+}) {
+  const Heading = headingLevel === 1 ? "h1" : "h2";
   return (
     <section className="mission-card workspace-state" role="alert">
       <p className="eyebrow">Verified data unavailable</p>
-      <h1>This view was not replaced with invented state.</h1>
+      <Heading>This view was not replaced with invented state.</Heading>
       <p>{message}</p>
       <button className="button button--primary" type="button" onClick={retry}>
         Try again
@@ -99,10 +109,10 @@ export function TodayCompanion() {
   const loader = useCallback((signal: AbortSignal) => learningApi.dashboard(signal), []);
   const { state, reload } = useLoad(loader);
   if (state.status === "loading") {
-    return <Loading label="your progress overview" />;
+    return <Loading label="your progress overview" headingLevel={2} />;
   }
   if (state.status === "error") {
-    return <LoadError message={state.message} retry={reload} />;
+    return <LoadError message={state.message} retry={reload} headingLevel={2} />;
   }
   const dashboard = state.data;
   return (
@@ -194,8 +204,10 @@ export function DayTaskManager({
     return () => window.clearInterval(timer);
   }, [state]);
 
-  if (state.status === "loading") return <Loading label="today’s task plan" />;
-  if (state.status === "error") return <LoadError message={state.message} retry={reload} />;
+  if (state.status === "loading") return <Loading label="today’s task plan" headingLevel={2} />;
+  if (state.status === "error") {
+    return <LoadError message={state.message} retry={reload} headingLevel={2} />;
+  }
 
   const plan = state.data;
   const editableStatus =
@@ -582,9 +594,9 @@ function PeriodicReflectionPanel({ csrfToken }: { csrfToken: string | null }) {
   const [weeklySummary, setWeeklySummary] = useState("");
   const [monthlyRetrospective, setMonthlyRetrospective] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
-  if (state.status === "loading") return <Loading label="periodic reflections" />;
+  if (state.status === "loading") return <Loading label="periodic reflections" headingLevel={2} />;
   if (state.status === "error") {
-    return <LoadError message={state.message} retry={reload} />;
+    return <LoadError message={state.message} retry={reload} headingLevel={2} />;
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -823,8 +835,10 @@ function CareerTracker({ csrfToken }: { csrfToken: string | null }) {
   const [evidenceLinks, setEvidenceLinks] = useState("");
   const [nextAction, setNextAction] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
-  if (state.status === "loading") return <Loading label="career evidence" />;
-  if (state.status === "error") return <LoadError message={state.message} retry={reload} />;
+  if (state.status === "loading") return <Loading label="career evidence" headingLevel={2} />;
+  if (state.status === "error") {
+    return <LoadError message={state.message} retry={reload} headingLevel={2} />;
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

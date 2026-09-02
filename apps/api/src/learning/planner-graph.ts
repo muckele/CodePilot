@@ -134,20 +134,17 @@ const progressResultSchema = z
   })
   .strict();
 
+const roadmapDaySchema = z
+  .object({
+    dayNumber: z.number().int().min(1).max(365),
+    title: z.string().trim().min(1).max(240),
+    prerequisiteDayNumbers: z.array(z.number().int().min(1).max(365)).max(364)
+  })
+  .strict();
+
 const roadmapResultSchema = z
   .object({
-    days: z
-      .array(
-        z
-          .object({
-            dayNumber: z.number().int().min(1).max(365),
-            title: z.string().trim().min(1).max(240),
-            prerequisiteDayNumbers: z.array(z.number().int().min(1).max(365)).max(364)
-          })
-          .strict()
-      )
-      .min(1)
-      .max(14)
+    days: z.array(roadmapDaySchema).min(1).max(14)
   })
   .strict();
 
@@ -227,7 +224,9 @@ const plannerGraphStateSchema = z
       .object({
         currentDayNumber: z.number().int().min(1).max(365).nullable(),
         incompleteDayNumbers: z.array(z.number().int().min(1).max(365)).max(365),
-        roadmapDays: roadmapResultSchema.shape.days,
+        // A newly persisted graph has not gathered roadmap evidence yet. The
+        // tool result still requires at least one day before this field is populated.
+        roadmapDays: z.array(roadmapDaySchema).max(14),
         availableMinutes: z.number().int().min(30).max(840).nullable(),
         noteMatches: noteSearchResultSchema.shape.matches
       })

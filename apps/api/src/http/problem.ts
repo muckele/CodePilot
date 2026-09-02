@@ -1,5 +1,10 @@
 import { problemDetailsSchema, type ProblemDetails } from "@codelift/contracts";
 import type { ErrorRequestHandler, RequestHandler, Response } from "express";
+import {
+  normalizedRoute,
+  requestDurationMs,
+  type StructuredRequestLogger
+} from "../middleware/request-context.js";
 
 export interface HttpProblemOptions {
   readonly type: string;
@@ -95,49 +100,61 @@ export const notFoundHandler: RequestHandler = (_request, response) => {
   });
 };
 
-export const problemErrorHandler: ErrorRequestHandler = (
-  error: unknown,
-  _request,
-  response,
-  next
-) => {
-  // Express recognizes error middleware by its four-argument signature.
-  void next;
+function safeErrorName(error: unknown): string {
+  const candidate = error instanceof Error ? error.name : "UnknownError";
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(candidate) ? candidate : "UnknownError";
+}
 
-  if (error instanceof HttpProblem) {
-    sendProblem(response, {
-      type: error.type,
-      title: error.title,
-      status: error.status,
-      ...(error.detail === undefined ? {} : { detail: error.detail })
+export function createProblemErrorHandler(logger: StructuredRequestLogger): ErrorRequestHandler {
+  return (error: unknown, request, response, next) => {
+    // Express recognizes error middleware by its four-argument signature.
+    void next;
+
+    if (error instanceof HttpProblem) {
+      sendProblem(response, {
+        type: error.type,
+        title: error.title,
+        status: error.status,
+        ...(error.detail === undefined ? {} : { detail: error.detail })
+      });
+      return;
+    }
+
+    if (isPayloadTooLargeError(error)) {
+      sendProblem(response, {
+        type: "https://codelift.ai/problems/payload-too-large",
+        title: "Payload too large",
+        status: 413,
+        detail: "The JSON request body exceeds the allowed size."
+      });
+      return;
+    }
+
+    if (isMalformedJsonError(error)) {
+      sendProblem(response, {
+        type: "https://codelift.ai/problems/malformed-json",
+        title: "Malformed JSON",
+        status: 400,
+        detail: "The request body is not valid JSON."
+      });
+      return;
+    }
+
+    const requestId = responseRequestId(response) ?? "missing";
+    logger.error?.({
+      event: "http.server_error",
+      requestId,
+      method: request.method,
+      route: normalizedRoute(request),
+      statusCode: 500,
+      errorName: safeErrorName(error),
+      durationMs: requestDurationMs(response.locals.requestStartedAt)
     });
-    return;
-  }
-
-  if (isPayloadTooLargeError(error)) {
     sendProblem(response, {
-      type: "https://codelift.ai/problems/payload-too-large",
-      title: "Payload too large",
-      status: 413,
-      detail: "The JSON request body exceeds the allowed size."
+      type: "https://codelift.ai/problems/internal-error",
+      title: "Internal server error",
+      status: 500,
+      detail: "The API could not complete the request."
     });
-    return;
-  }
-
-  if (isMalformedJsonError(error)) {
-    sendProblem(response, {
-      type: "https://codelift.ai/problems/malformed-json",
-      title: "Malformed JSON",
-      status: 400,
-      detail: "The request body is not valid JSON."
-    });
-    return;
-  }
-
-  sendProblem(response, {
-    type: "https://codelift.ai/problems/internal-error",
-    title: "Internal server error",
-    status: 500,
-    detail: "The API could not complete the request."
-  });
-};
+  };
+}

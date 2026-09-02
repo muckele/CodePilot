@@ -24,18 +24,18 @@ evals; provider/database secrets; curriculum integrity; planner approvals.
 | CSRF/cross-origin write         | unauthorized state            | exact `WEB_ORIGIN`, CSRF token/hash, mutation middleware, negative tests                                     |
 | XSS/improper output rendering   | session/data theft            | React escaping, no raw HTML, strict contracts, CSP-oriented Helmet headers, static scan                      |
 | BOLA/tenant leakage             | cross-user notes/progress     | data-layer `userId` scope, opaque IDs plus owner scope, two-user real-Mongo tests                            |
-| Replay/race                     | duplicate XP/evidence/actions | stable unique indexes, idempotency keys, optimistic version, global skip replay check                        |
-| False completion                | dishonest state               | required explicit evidence/reflection, Core/Recovery separation, API-failure UI tests                        |
+| Replay/race                     | duplicate/contradictory state | stable unique indexes, idempotency keys, transactional mission version, atomic planner decision claim        |
+| False completion                | dishonest state               | required explicit evidence/reflection, serialized reflection/completion, Core/Recovery separation            |
 | Secret/log leakage              | provider/data compromise      | backend-only env, scans, hashed trace input, structured route/request metadata only                          |
 | Unsafe URL/resource             | phishing/SSRF                 | immutable curated HTTPS catalog, safe new-tab attributes, maintenance checker; API never fetches learner URL |
 | Prompt injection/poisoned notes | unsafe output/action          | notes are data, no tool execution, support labels/citations/abstention, local eval                           |
 | Cross-tenant vector leak        | private content exposure      | user/source/version metadata, user-scoped retrieval/update/delete, isolation test                            |
-| Model refusal/malformed/outage  | false or broken guidance      | strict schema, timeout/retry, normalization, deterministic fallback, kill switch                             |
-| Private external transfer       | confidentiality               | local default, server flag, profile opt-in, per-request consent, no browser key                              |
+| Model refusal/malformed/outage  | false or broken guidance      | 64 KiB streamed limit, strict schema, timeout/retry, normalization, deterministic fallback, kill switch      |
+| Private external transfer       | confidentiality               | local default, HTTPS/no-redirect external endpoint, server flag, profile opt-in, request consent             |
 | Excessive agency                | unapproved state/cost         | deterministic pre-unlock, read-only proposals, narrow state, budgets, approval/revise gate, terminal reason  |
-| Denial of wallet/resources      | cost/availability             | zero-cost default, request/rate/step/token/cost/time limits, feature flags and kill switch                   |
+| Denial of wallet/resources      | cost/availability             | zero-cost default, rate/budget limits, bounded notes/exports/provider bodies, feature flags and kill switch  |
 | Supply-chain/model risk         | compromise/license            | pinned major runtime/deps, audit, non-root containers, no base model download, explicit configured model     |
-| Deletion failure                | retained private/derived data | Mongo transaction and serial cascade, deletion/isolation regression                                          |
+| Deletion failure/race           | retained or orphaned data     | shared User write fence, Mongo transaction/serial cascade, concurrent deletion regression                    |
 | Invalid curriculum/seed         | wrong 365-day path            | immutable preflight, runtime validation, source hash, idempotent database validation                         |
 
 ## Abuse cases

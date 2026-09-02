@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
+import { fullSourceStatusArguments } from "./release-source-state.mjs";
+
 const root = process.cwd();
 const reportPath = path.join(root, "reports", "fresh-clone.json");
 const startedAt = new Date();
@@ -15,6 +17,7 @@ let failure = null;
 let cloneComposeEvidence = null;
 let pnpmVersion = null;
 let pythonVersion = null;
+let uvCacheDirectory = null;
 
 function run(label, executable, argumentsValue, options = {}) {
   const commandStartedAt = Date.now();
@@ -82,7 +85,7 @@ let sourceWasClean = false;
 
 try {
   sourceRevision = run("source revision", "git", ["rev-parse", "HEAD"]);
-  const status = run("source cleanliness", "git", ["status", "--porcelain=v1"]);
+  const status = run("source cleanliness", "git", fullSourceStatusArguments);
   sourceWasClean = status.length === 0;
   if (!sourceWasClean) {
     throw new Error("Fresh-clone evidence requires a clean committed source tree.");
@@ -138,10 +141,20 @@ try {
     env: cloneEnvironment
   });
   run(
-    "Python development install",
+    "Pinned uv install",
     path.join(cloneDirectory, "services", "ai", ".venv", "bin", "pip"),
-    ["install", "--disable-pip-version-check", "--no-input", "-e", "services/ai[dev]"],
+    ["install", "--disable-pip-version-check", "--no-input", "uv==0.12.3"],
     { cwd: cloneDirectory, env: cloneEnvironment }
+  );
+  uvCacheDirectory = await mkdtemp(path.join(os.tmpdir(), "codelift-fresh-uv-"));
+  run(
+    "Locked Python development sync",
+    path.join(cloneDirectory, "services", "ai", ".venv", "bin", "uv"),
+    ["sync", "--project", "services/ai", "--locked", "--extra", "dev"],
+    {
+      cwd: cloneDirectory,
+      env: { ...cloneEnvironment, UV_CACHE_DIR: uvCacheDirectory }
+    }
   );
   pnpm("production build", ["build"], cloneDirectory, cloneEnvironment);
   pnpm("unit and service tests", ["test"], cloneDirectory, cloneEnvironment);
@@ -170,6 +183,9 @@ try {
   if (cloneDirectory !== null) {
     await rm(cloneDirectory, { recursive: true, force: true });
   }
+  if (uvCacheDirectory !== null) {
+    await rm(uvCacheDirectory, { recursive: true, force: true });
+  }
 }
 
 let packageManager = null;
@@ -184,7 +200,7 @@ try {
 const report = {
   generatedAt: new Date().toISOString(),
   startedAt: startedAt.toISOString(),
-  profile: "clean-local-clone-frozen-javascript-and-ranged-python",
+  profile: "clean-local-clone-frozen-javascript-and-locked-python",
   sourceRevision,
   cloneRevision,
   sourceWasClean,
@@ -200,9 +216,9 @@ const report = {
   },
   installPolicy: {
     javascript: "frozen-lockfile-offline",
-    python: "pyproject-version-ranges-on-python-3.12",
+    python: "uv-lock-on-python-3.12",
     reproducibilityBoundary:
-      "clean-source compatibility evidence; Python dependencies are range-resolved, not artifact-locked"
+      "clean-source compatibility evidence; JavaScript and Python dependency resolutions are checked in and installed in frozen/locked mode"
   },
   commandResults,
   cloneComposeEvidence:

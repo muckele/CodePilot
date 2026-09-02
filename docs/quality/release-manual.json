@@ -1,7 +1,7 @@
 {
   "evidenceVersion": 2,
-  "observedAt": "2026-08-10T18:31:00Z",
-  "sourceDigest": "39f6a7dd3d6481c67119ded1ddc188d621853a56c0a8f422003bda5a7bb20f5e",
+  "observedAt": "2026-09-02T17:10:09Z",
+  "sourceDigest": "dca2b86e1a1a17e9c0f1427cd61c263819a8b14b9c3580c2a6bd21db40630ccc",
   "reviewProfile": "manual-in-app-browser-plus-real-playwright-supplemental",
   "reviewIdentity": "synthetic example.test accounts only",
   "responsiveWide": true,
@@ -45,10 +45,10 @@
     "wide": {
       "viewportWidth": 1440,
       "viewportHeight": 1000,
-      "rootClientWidth": 1425,
-      "rootScrollWidth": 1425,
-      "bodyClientWidth": 1425,
-      "bodyScrollWidth": 1425,
+      "rootClientWidth": 1440,
+      "rootScrollWidth": 1440,
+      "bodyClientWidth": 1440,
+      "bodyScrollWidth": 1440,
       "horizontalOverflow": false,
       "visibleOverflowOffenders": 0,
       "coreMinutes": 30
@@ -56,10 +56,10 @@
     "narrow": {
       "viewportWidth": 320,
       "viewportHeight": 900,
-      "rootClientWidth": 305,
-      "rootScrollWidth": 305,
-      "bodyClientWidth": 305,
-      "bodyScrollWidth": 305,
+      "rootClientWidth": 320,
+      "rootScrollWidth": 320,
+      "bodyClientWidth": 320,
+      "bodyScrollWidth": 320,
       "horizontalOverflow": false,
       "visibleOverflowOffenders": 0,
       "intentionalHorizontalScrollRegions": [
@@ -89,10 +89,19 @@
   },
   "behavioralEvidence": {
     "playwrightJourneys": {
-      "passed": 10,
+      "passed": 11,
+      "failed": 1,
+      "durationSeconds": 28.884,
+      "durationScope": "Chromium passing run only",
+      "browser": "chromium passing; mobile-webkit focused gate red",
+      "consoleErrors": 0,
+      "mobileWebKitDisposition": "Product flow reached successful register, Today, logout, re-login, and deletion responses; the test still expects /app/today instead of the honored returnTo=/app/account."
+    },
+    "postReviewTargetedJourney": {
+      "passed": 1,
       "failed": 0,
-      "durationSeconds": 25.9,
       "browser": "chromium",
+      "scope": "fragment-only invitation/reset routes and critical-flow accessibility after the final source repairs",
       "consoleErrors": 0
     },
     "manualBrowser": {
@@ -125,5 +134,7 @@
     "docs/quality/screenshots/release-dark-reduced.png",
     "docs/quality/screenshots/release-rag-citations.png"
   ],
-  "openFindings": []
+  "openFindings": [
+    "Required mobile-WebKit gate remains red after the bounded two-approach repair budget; exact-revision release must remain blocked unless the gate passes."
+  ]
 }

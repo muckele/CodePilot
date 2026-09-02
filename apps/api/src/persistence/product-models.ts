@@ -225,6 +225,16 @@ export interface PlannerActionRecord {
   rationale: string;
 }
 
+export interface PlannerDecisionClaimRecord {
+  idempotencyKey: string;
+  action: "approve" | "revise";
+  note: string;
+  ownerId: string;
+  checkpointId: string | null;
+  leasedAt: Date;
+  leaseExpiresAt: Date;
+}
+
 export interface AgentRunRecord {
   userId: Types.ObjectId;
   graphVersion: "planner-graph-v1";
@@ -251,6 +261,7 @@ export interface AgentRunRecord {
     | "cancelled";
   trace: string[];
   operationKeys: string[];
+  decisionClaim: PlannerDecisionClaimRecord | null;
   approvedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -630,6 +641,19 @@ const plannerActionSchema = new Schema<PlannerActionRecord>(
   { _id: false, strict: "throw", versionKey: false }
 );
 
+const plannerDecisionClaimSchema = new Schema<PlannerDecisionClaimRecord>(
+  {
+    idempotencyKey: { type: String, required: true, minlength: 8, maxlength: 128 },
+    action: { type: String, required: true, enum: ["approve", "revise"] },
+    note: { type: String, default: "", maxlength: 500 },
+    ownerId: { type: String, required: true, match: /^[a-f0-9]{24}$/u },
+    checkpointId: { type: String, default: null, maxlength: 240 },
+    leasedAt: { type: Date, required: true },
+    leaseExpiresAt: { type: Date, required: true }
+  },
+  { _id: false, strict: "throw", versionKey: false }
+);
+
 const agentRunSchema = new Schema<AgentRunRecord>(
   {
     userId: { type: Schema.Types.ObjectId, required: true, index: true },
@@ -670,6 +694,11 @@ const agentRunSchema = new Schema<AgentRunRecord>(
     },
     trace: { type: [String], required: true },
     operationKeys: { type: [String], default: [] },
+    decisionClaim: {
+      type: plannerDecisionClaimSchema,
+      default: null,
+      select: false
+    },
     approvedAt: { type: Date, default: null }
   },
   { timestamps: true, strict: "throw", versionKey: false }

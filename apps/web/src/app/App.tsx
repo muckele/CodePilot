@@ -8,11 +8,13 @@ import {
   AccountDeletionRoute,
   AccountExperience,
   AccountOnboardingRoute,
+  AccountPasswordResetRoute,
   AccountSettingsRoute,
   AccountTodayRoute,
   AccountWorkspaceRoute
 } from "../features/account/AccountExperience";
 import { CurriculumPreviewPage } from "../features/curriculum/CurriculumPreviewPage";
+import { PrivacyPage, SupportPage, TermsPage } from "../features/policy/PolicyPages";
 import { WORKSPACE_PATHS } from "../features/workspace/WorkspaceExperience";
 
 type AppProps = {
@@ -30,7 +32,7 @@ function CurriculumRoute() {
 
 function RoutedApplication() {
   const location = useLocation();
-  const privateMode = !location.pathname.startsWith("/curriculum/");
+  const privateMode = location.pathname.startsWith("/app/") || location.pathname === "/admin";
 
   return (
     <AppShell
@@ -39,10 +41,14 @@ function RoutedApplication() {
     >
       <Routes>
         <Route path="curriculum/:requestedDay" element={<CurriculumRoute />} />
+        <Route path="privacy" element={<PrivacyPage />} />
+        <Route path="terms" element={<TermsPage />} />
+        <Route path="support" element={<SupportPage />} />
         <Route element={<AccountExperience />}>
           <Route index element={null} />
           <Route path="register" element={<AccountAuthRoute mode="register" />} />
           <Route path="login" element={<AccountAuthRoute mode="login" />} />
+          <Route path="reset-password" element={<AccountPasswordResetRoute />} />
           <Route path="app/onboarding" element={<AccountOnboardingRoute />} />
           <Route path="app/today" element={<AccountTodayRoute />} />
           <Route path="app/account" element={<AccountSettingsRoute />} />

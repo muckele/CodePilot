@@ -93,6 +93,11 @@ export function AppShell({
 
       <footer className="site-footer">
         <p>One verified mission. Thirty focused minutes. No perfect streak required.</p>
+        <nav className="footer-links" aria-label="Policies and support">
+          <Link to="/privacy">Privacy</Link>
+          <Link to="/terms">Terms</Link>
+          <Link to="/support">Support</Link>
+        </nav>
         <p>
           {privateMode
             ? "Private progress is stored through the protected Node and Mongo boundary."

@@ -9,8 +9,16 @@ import request, { type Agent } from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { bootstrapApi, type BootstrappedApi } from "../bootstrap.js";
+import {
+  issueInvitation,
+  issuePasswordReset,
+  revokeUnusedInvitation
+} from "../account/access-operator.js";
+import { AccountService } from "../account/service.js";
 import type { ApiConfig } from "../config.js";
 import type { StructuredRequestLogger } from "../middleware/request-context.js";
+import { buildPilotMetrics } from "../metrics/pilot-metrics.js";
+import type { ProgressRecord } from "../persistence/models.js";
 
 const canonicalCurriculumPath = fileURLToPath(
   new URL("../../../../codelift_ai_curriculum_seed_v2_2026.json", import.meta.url)
@@ -39,7 +47,10 @@ function guardedTestUri(): string {
   return uri;
 }
 
-function configFor(uri: string): ApiConfig {
+function configFor(
+  uri: string,
+  registrationMode: ApiConfig["registration"]["mode"] = "open"
+): ApiConfig {
   return {
     nodeEnv: "test",
     port: 4000,
@@ -58,6 +69,11 @@ function configFor(uri: string): ApiConfig {
       secureCookie: false,
       idleTtlMs: 7 * 24 * 60 * 60 * 1_000,
       absoluteTtlMs: 30 * 24 * 60 * 60 * 1_000
+    },
+    registration: {
+      mode: registrationMode,
+      invitationTtlMs: 7 * 24 * 60 * 60 * 1_000,
+      passwordResetTtlMs: 60 * 60 * 1_000
     },
     ai: {
       provider: "mock",
@@ -159,6 +175,8 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
       runtime.persistence.models.Progress.deleteMany({}),
       runtime.persistence.models.Reflection.deleteMany({}),
       runtime.persistence.models.Session.deleteMany({}),
+      runtime.persistence.models.Invitation.deleteMany({}),
+      runtime.persistence.models.PasswordReset.deleteMany({}),
       runtime.persistence.models.User.deleteMany({}),
       runtime.persistence.models.XpEvent.deleteMany({}),
       runtime.persistence.models.UserAchievement.deleteMany({}),
@@ -171,7 +189,9 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
       runtime.persistence.models.EvalRun.deleteMany({}),
       runtime.persistence.models.IndexedSource.deleteMany({}),
       runtime.persistence.models.AgentRun.deleteMany({}),
-      runtime.persistence.models.JobApplication.deleteMany({})
+      runtime.persistence.models.JobApplication.deleteMany({}),
+      runtime.persistence.models.UserActivity.deleteMany({}),
+      runtime.persistence.models.PilotAggregate.deleteMany({})
     ]);
     await runtime.persistence.models.FeatureFlag.updateOne(
       { key: "ai-kill-switch" },
@@ -185,6 +205,296 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
     }
     await runtime.close();
   });
+
+  it("atomically gates invitations and resets passwords without token storage, replay, or surviving sessions", async () => {
+    const accessUri = new URL(guardedTestUri());
+    accessUri.pathname = "/codelift_m16_access_test";
+    const accessRuntime = await bootstrapApi({
+      config: configFor(accessUri.toString(), "invite_only"),
+      logger: silentLogger
+    });
+    if (accessRuntime.persistence.status !== "ready") {
+      throw new Error("The access test requires MongoDB.");
+    }
+    const models = accessRuntime.persistence.models;
+    const email = "invited-pilot@example.com";
+    const password = "Correct horse battery staple!";
+    const newPassword = "A newer correct horse battery staple!";
+
+    try {
+      const missingInviteBrowser = request.agent(accessRuntime.app);
+      const missingProtection = await csrf(missingInviteBrowser);
+      const missingInvite = await missingInviteBrowser
+        .post("/api/v1/auth/register")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", missingProtection.csrfToken)
+        .send({ email, password });
+      expect(missingInvite.status).toBe(400);
+
+      const invitation = await issueInvitation({
+        models,
+        email,
+        issuer: "integration-test",
+        ttlMs: 60 * 60 * 1_000
+      });
+      const storedInvitation = await models.Invitation.findById(invitation.id).select("+tokenHash");
+      expect(storedInvitation?.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(storedInvitation?.tokenHash).not.toContain(invitation.token);
+
+      const wrongEmailBrowser = request.agent(accessRuntime.app);
+      const wrongProtection = await csrf(wrongEmailBrowser);
+      const wrongEmail = await wrongEmailBrowser
+        .post("/api/v1/auth/register")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", wrongProtection.csrfToken)
+        .send({
+          email: "wrong-invited-pilot@example.com",
+          password,
+          invitationToken: invitation.token
+        });
+      expect(wrongEmail.status).toBe(400);
+      expect({ ...wrongEmail.body, requestId: "normalized" }).toEqual({
+        ...missingInvite.body,
+        requestId: "normalized"
+      });
+      expect(await models.Invitation.countDocuments({ _id: invitation.id, consumedAt: null })).toBe(
+        1
+      );
+
+      const expiredInvitation = await issueInvitation({
+        models,
+        email: "expired-pilot@example.com",
+        issuer: "integration-test",
+        ttlMs: 1,
+        now: new Date(Date.now() - 60_000)
+      });
+      const expiredInvitationBrowser = request.agent(accessRuntime.app);
+      const expiredInvitationProtection = await csrf(expiredInvitationBrowser);
+      const expiredInvitationResponse = await expiredInvitationBrowser
+        .post("/api/v1/auth/register")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", expiredInvitationProtection.csrfToken)
+        .send({
+          email: "expired-pilot@example.com",
+          password,
+          invitationToken: expiredInvitation.token
+        });
+      expect(expiredInvitationResponse.status).toBe(400);
+      expect({ ...expiredInvitationResponse.body, requestId: "normalized" }).toEqual({
+        ...missingInvite.body,
+        requestId: "normalized"
+      });
+
+      const invitedBrowser = request.agent(accessRuntime.app);
+      const invitedProtection = await csrf(invitedBrowser);
+      const registered = await invitedBrowser
+        .post("/api/v1/auth/register")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", invitedProtection.csrfToken)
+        .send({ email, password, invitationToken: invitation.token });
+      expect(registered.status).toBe(201);
+      expect(
+        await models.Invitation.countDocuments({ _id: invitation.id, consumedAt: { $ne: null } })
+      ).toBe(1);
+
+      const replayBrowser = request.agent(accessRuntime.app);
+      const replayProtection = await csrf(replayBrowser);
+      const replay = await replayBrowser
+        .post("/api/v1/auth/register")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", replayProtection.csrfToken)
+        .send({ email, password, invitationToken: invitation.token });
+      expect(replay.status).toBe(400);
+      expect({ ...replay.body, requestId: "normalized" }).toEqual({
+        ...missingInvite.body,
+        requestId: "normalized"
+      });
+
+      const revoked = await issueInvitation({
+        models,
+        email: "revoked-pilot@example.com",
+        issuer: "integration-test",
+        ttlMs: 60 * 60 * 1_000
+      });
+      expect(await revokeUnusedInvitation({ models, invitationId: revoked.id })).toBe(true);
+      const revokedBrowser = request.agent(accessRuntime.app);
+      const revokedProtection = await csrf(revokedBrowser);
+      expect(
+        (
+          await revokedBrowser
+            .post("/api/v1/auth/register")
+            .set("Origin", webOrigin)
+            .set("X-CSRF-Token", revokedProtection.csrfToken)
+            .send({
+              email: "revoked-pilot@example.com",
+              password,
+              invitationToken: revoked.token
+            })
+        ).status
+      ).toBe(400);
+
+      const concurrentEmail = "concurrent-pilot@example.com";
+      const concurrentInvitation = await issueInvitation({
+        models,
+        email: concurrentEmail,
+        issuer: "integration-test",
+        ttlMs: 60 * 60 * 1_000
+      });
+      const concurrentBrowsers = [
+        request.agent(accessRuntime.app),
+        request.agent(accessRuntime.app)
+      ];
+      const concurrentProtection = await Promise.all(concurrentBrowsers.map(csrf));
+      const concurrentResults = await Promise.all(
+        concurrentBrowsers.map((browser, index) =>
+          browser
+            .post("/api/v1/auth/register")
+            .set("Origin", webOrigin)
+            .set("X-CSRF-Token", concurrentProtection[index]?.csrfToken ?? "")
+            .send({ email: concurrentEmail, password, invitationToken: concurrentInvitation.token })
+        )
+      );
+      expect(concurrentResults.filter((response) => response.status === 201)).toHaveLength(1);
+      expect(concurrentResults.filter((response) => response.status === 400)).toHaveLength(1);
+      expect(concurrentResults.every((response) => response.status < 500)).toBe(true);
+      expect(await models.User.countDocuments({ email: concurrentEmail })).toBe(1);
+
+      const secondSession = request.agent(accessRuntime.app);
+      const loginProtection = await csrf(secondSession);
+      expect(
+        (
+          await secondSession
+            .post("/api/v1/auth/login")
+            .set("Origin", webOrigin)
+            .set("X-CSRF-Token", loginProtection.csrfToken)
+            .send({ email, password })
+        ).status
+      ).toBe(200);
+
+      const siblingReset = await issuePasswordReset({
+        models,
+        email,
+        issuer: "integration-test-older-link",
+        ttlMs: 60 * 60 * 1_000
+      });
+      const reset = await issuePasswordReset({
+        models,
+        email,
+        issuer: "integration-test",
+        ttlMs: 60 * 60 * 1_000
+      });
+      expect((await models.PasswordReset.findById(siblingReset.id).lean())?.revokedAt).toEqual(
+        expect.any(Date)
+      );
+      const storedReset = await models.PasswordReset.findById(reset.id).select("+tokenHash");
+      expect(storedReset?.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(storedReset?.tokenHash).not.toContain(reset.token);
+
+      const resetBrowser = request.agent(accessRuntime.app);
+      const resetProtection = await csrf(resetBrowser);
+      const resetResponse = await resetBrowser
+        .post("/api/v1/auth/reset-password")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", resetProtection.csrfToken)
+        .send({ token: reset.token, password: newPassword });
+      expect(resetResponse.status).toBe(204);
+      expect((await resetBrowser.get("/api/v1/me")).body).toEqual({ authenticated: false });
+      expect((await invitedBrowser.get("/api/v1/me")).body).toEqual({ authenticated: false });
+      expect((await secondSession.get("/api/v1/me")).body).toEqual({ authenticated: false });
+
+      const siblingResetProtection = await csrf(resetBrowser);
+      expect(
+        (
+          await resetBrowser
+            .post("/api/v1/auth/reset-password")
+            .set("Origin", webOrigin)
+            .set("X-CSRF-Token", siblingResetProtection.csrfToken)
+            .send({ token: siblingReset.token, password: newPassword })
+        ).status
+      ).toBe(400);
+
+      const replayResetProtection = await csrf(resetBrowser);
+      expect(
+        (
+          await resetBrowser
+            .post("/api/v1/auth/reset-password")
+            .set("Origin", webOrigin)
+            .set("X-CSRF-Token", replayResetProtection.csrfToken)
+            .send({ token: reset.token, password: newPassword })
+        ).status
+      ).toBe(400);
+
+      const expiredReset = await issuePasswordReset({
+        models,
+        email,
+        issuer: "integration-test",
+        ttlMs: 1,
+        now: new Date(Date.now() - 60_000)
+      });
+      const expiredProtection = await csrf(resetBrowser);
+      expect(
+        (
+          await resetBrowser
+            .post("/api/v1/auth/reset-password")
+            .set("Origin", webOrigin)
+            .set("X-CSRF-Token", expiredProtection.csrfToken)
+            .send({ token: expiredReset.token, password: newPassword })
+        ).status
+      ).toBe(400);
+
+      const freshSession = request.agent(accessRuntime.app);
+      const freshProtection = await csrf(freshSession);
+      const freshLogin = await freshSession
+        .post("/api/v1/auth/login")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", freshProtection.csrfToken)
+        .send({ email, password: newPassword });
+      expect(freshLogin.status).toBe(200);
+      await issueInvitation({
+        models,
+        email,
+        issuer: "integration-test-unused-before-deletion",
+        ttlMs: 60 * 60 * 1_000
+      });
+      expect(
+        (
+          await freshSession
+            .delete("/api/v1/me")
+            .set("Origin", webOrigin)
+            .set("X-CSRF-Token", freshLogin.body.csrfToken)
+            .send({ password: newPassword, confirmation: "DELETE" })
+        ).status
+      ).toBe(204);
+      expect(
+        await models.Invitation.countDocuments({ consumedByUserId: registered.body.user.id })
+      ).toBe(0);
+      expect(await models.Invitation.countDocuments({ email })).toBe(0);
+      expect(await models.PasswordReset.countDocuments({ userId: registered.body.user.id })).toBe(
+        0
+      );
+
+      const rateLimitedBrowser = request.agent(accessRuntime.app);
+      const rateProtection = await csrf(rateLimitedBrowser);
+      // Four reset requests above already count against the IP-scoped limit of ten.
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const response = await rateLimitedBrowser
+          .post("/api/v1/auth/reset-password")
+          .set("Origin", webOrigin)
+          .set("X-CSRF-Token", rateProtection.csrfToken)
+          .send({ token: "x".repeat(43), password: newPassword });
+        expect(response.status).toBe(400);
+      }
+      const rateLimited = await rateLimitedBrowser
+        .post("/api/v1/auth/reset-password")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", rateProtection.csrfToken)
+        .send({ token: "x".repeat(43), password: newPassword });
+      expect(rateLimited.status).toBe(429);
+    } finally {
+      await accessRuntime.persistence.connection.dropDatabase();
+      await accessRuntime.close();
+    }
+  }, 45_000);
 
   it("completes register, onboard, Core evidence/reflection, resume, and deletion", async () => {
     const agent = request.agent(runtime.app);
@@ -359,6 +669,459 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
     expect(await runtime.persistence.models.SkillEvidence.countDocuments({})).toBe(0);
     expect((await agent.get("/api/v1/curriculum/1")).status).toBe(200);
   }, 30_000);
+
+  it("exports only the authenticated owner source and derived data without hashes or internal fields", async () => {
+    const owner = request.agent(runtime.app);
+    const other = request.agent(runtime.app);
+    const ownerAuth = await register(owner, "export-owner@example.com");
+    const otherAuth = await register(other, "export-other@example.com");
+    await onboard(owner, ownerAuth.csrfToken, "Export Owner");
+    await onboard(other, otherAuth.csrfToken, "Export Other");
+    if (runtime.persistence.status !== "ready") throw new Error("MongoDB is required.");
+    const ownerUser = await runtime.persistence.models.User.findOne({
+      email: "export-owner@example.com"
+    });
+    const otherUser = await runtime.persistence.models.User.findOne({
+      email: "export-other@example.com"
+    });
+    if (ownerUser === null || otherUser === null) throw new Error("Export users were not created.");
+
+    await runtime.persistence.models.Reflection.create({
+      userId: ownerUser._id,
+      dayNumber: 1,
+      confused: "owner-private-reflection",
+      mentalModelChanged: "owner-model-change",
+      retrieveLater: "owner-retrieval",
+      weeklySummary: "",
+      monthlyRetrospective: "",
+      operationKeys: ["owner-export-reflection"],
+      completedAt: null
+    });
+    await runtime.persistence.models.Reflection.create({
+      userId: otherUser._id,
+      dayNumber: 1,
+      confused: "other-private-reflection",
+      mentalModelChanged: "other-model-change",
+      retrieveLater: "other-retrieval",
+      weeklySummary: "",
+      monthlyRetrospective: "",
+      operationKeys: ["other-export-reflection"],
+      completedAt: null
+    });
+    await runtime.persistence.models.IndexedSource.create({
+      userId: ownerUser._id,
+      title: "Owner source",
+      dayNumber: 1,
+      content: "owner-indexed-source",
+      contentHash: "a".repeat(64),
+      version: 1,
+      chunks: [
+        {
+          chunkId: "owner-chunk",
+          text: "owner-derived-chunk",
+          ordinal: 0,
+          contentHash: "b".repeat(64),
+          embedding: [0.1, 0.2]
+        }
+      ],
+      operationKeys: ["owner-export-index"]
+    });
+    await runtime.persistence.models.Invitation.create({
+      tokenHash: "c".repeat(64),
+      purpose: "registration",
+      email: ownerUser.email,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+      consumedAt: new Date(),
+      revokedAt: null,
+      consumedByUserId: ownerUser._id,
+      createdBy: "export-regression"
+    });
+    await runtime.persistence.models.Misconception.create({
+      userId: ownerUser._id,
+      sourceDayNumber: 1,
+      reviewItemId: ownerUser._id,
+      text: "owner-export-misconception",
+      corrected: false,
+      correctedAt: null
+    });
+
+    const exported = await owner.get("/api/v1/me/export");
+    expect(exported.status).toBe(200);
+    expect(exported.headers["content-disposition"]).toMatch(/^attachment;/);
+    expect(exported.headers["cache-control"]).toBe("no-store");
+    expect(exported.body.schemaVersion).toBe("codelift.account-export.v1");
+    const serialized = JSON.stringify(exported.body);
+    expect(serialized).toContain("owner-private-reflection");
+    expect(serialized).toContain("owner-indexed-source");
+    expect(serialized).toContain("owner-derived-chunk");
+    expect(serialized).toContain("owner-export-misconception");
+    expect(serialized).not.toContain("other-private-reflection");
+    expect(serialized).not.toContain("export-other@example.com");
+    expect(serialized).not.toMatch(
+      /passwordHash|tokenHash|csrfHash|contentHash|inputHash|"_id"|"userId"|consumedByUserId|reviewItemId/
+    );
+  });
+
+  it("reports only thresholded aggregate pilot metrics without private learner fields", async () => {
+    if (runtime.persistence.status !== "ready") throw new Error("MongoDB is required.");
+    const models = runtime.persistence.models;
+    const since = new Date("2026-08-01T00:00:00.000Z");
+    const until = new Date("2026-09-01T00:00:00.000Z");
+    const users = await models.User.create(
+      Array.from({ length: 5 }, (_, index) => ({
+        email: `private-metric-${index}@example.com`,
+        passwordHash: `private-password-hash-${index}`,
+        profile: onboardingProfile(`Private metric learner ${index}`, {
+          whyItMatters: `private career reason ${index}`
+        }),
+        onboardedAt: new Date(`2026-08-0${index + 2}T00:30:00.000Z`),
+        schemaVersion: 1,
+        createdAt: new Date(`2026-08-0${index + 2}T00:00:00.000Z`),
+        updatedAt: new Date(`2026-08-0${index + 2}T00:00:00.000Z`)
+      }))
+    );
+    for (const [index, userRecord] of users.entries()) {
+      await issueInvitation({
+        models,
+        email: userRecord.email,
+        issuer: "metrics-integration-test",
+        ttlMs: 60 * 60 * 1_000,
+        now: new Date(`2026-08-0${index + 2}T00:00:00.000Z`)
+      });
+      await models.Progress.create({
+        userId: userRecord._id,
+        dayNumber: 1,
+        status: index % 2 === 0 ? "core_completed" : "recovery_completed",
+        selectedMode: index % 2 === 0 ? "core" : "recovery",
+        evidence: [
+          {
+            kind: "text_explanation",
+            label: "private evidence label",
+            value: `private evidence ${index}`,
+            idempotencyKey: `metric-evidence-${index}`,
+            createdAt: new Date("2026-08-08T00:00:00.000Z")
+          }
+        ],
+        operationKeys: [],
+        version: 1,
+        startedAt: new Date("2026-08-07T00:00:00.000Z"),
+        completedAt: new Date("2026-08-08T00:00:00.000Z"),
+        statusReason: null,
+        rescheduledFor: null,
+        estimateMinutes: 30,
+        actualMinutes: 30,
+        timerSeconds: 0,
+        timerState: "paused",
+        subtasks: []
+      });
+    }
+
+    const report = await buildPilotMetrics(models, {
+      since,
+      until,
+      minimumCohortSize: 5
+    });
+    expect(report.suppressed).toBe(false);
+    if (report.suppressed) throw new Error("The five-user aggregate should not be suppressed.");
+    expect(report.funnel).toMatchObject({ invited: 5, registered: 5, onboarded: 5 });
+    expect(report.completion).toMatchObject({ core: 3, recovery: 2 });
+    const serialized = JSON.stringify(report);
+    for (const privateValue of [
+      "private-metric",
+      "Private metric learner",
+      "private career reason",
+      "private evidence",
+      "password",
+      "reflection",
+      "token"
+    ]) {
+      expect(serialized).not.toContain(privateValue);
+    }
+    expect(
+      (
+        await buildPilotMetrics(models, {
+          since,
+          until,
+          minimumCohortSize: 6
+        })
+      ).suppressed
+    ).toBe(true);
+  });
+
+  it("requires UTC-midnight boundaries for deterministic daily pilot metrics", async () => {
+    if (runtime.persistence.status !== "ready") throw new Error("MongoDB is required.");
+    await expect(
+      buildPilotMetrics(runtime.persistence.models, {
+        since: new Date("2026-08-01T00:01:00.000Z"),
+        until: new Date("2026-09-01T00:00:00.000Z"),
+        minimumCohortSize: 5
+      })
+    ).rejects.toThrow("UTC midnight");
+  });
+
+  it("keeps every pilot metric inside the exclusive fixed UTC observation window", async () => {
+    if (runtime.persistence.status !== "ready") throw new Error("MongoDB is required.");
+    const models = runtime.persistence.models;
+    const since = new Date("2026-08-01T00:00:00.000Z");
+    const until = new Date("2026-09-01T00:00:00.000Z");
+    const users = await models.User.create(
+      Array.from({ length: 5 }, (_, index) => ({
+        email: `closed-window-${index}@example.com`,
+        passwordHash: `closed-window-password-hash-${index}`,
+        profile: index === 0 ? onboardingProfile(`Window learner ${index}`) : null,
+        onboardedAt: index === 0 ? new Date("2026-08-02T00:30:00.000Z") : null,
+        schemaVersion: 1,
+        createdAt: new Date(`2026-08-0${index + 2}T00:00:00.000Z`),
+        updatedAt: new Date(`2026-08-0${index + 2}T00:00:00.000Z`)
+      }))
+    );
+    const [user0, user1, user2, user3, user4] = users;
+    if (
+      user0 === undefined ||
+      user1 === undefined ||
+      user2 === undefined ||
+      user3 === undefined ||
+      user4 === undefined
+    ) {
+      throw new Error("Expected five closed-window users.");
+    }
+
+    const progressFixture = (
+      overrides: Pick<
+        ProgressRecord,
+        | "userId"
+        | "status"
+        | "selectedMode"
+        | "startedAt"
+        | "completedAt"
+        | "createdAt"
+        | "updatedAt"
+      >
+    ): ProgressRecord => ({
+      dayNumber: 1,
+      evidence: [],
+      operationKeys: [],
+      version: 1,
+      statusReason: null,
+      rescheduledFor: null,
+      estimateMinutes: 30,
+      actualMinutes: 30,
+      timerSeconds: 0,
+      timerState: "paused",
+      subtasks: [],
+      ...overrides
+    });
+    await models.Progress.create([
+      progressFixture({
+        userId: user0._id,
+        status: "core_completed",
+        selectedMode: "core",
+        startedAt: new Date("2026-08-02T01:00:00.000Z"),
+        completedAt: new Date("2026-08-04T00:00:00.000Z"),
+        createdAt: new Date("2026-08-02T01:00:00.000Z"),
+        updatedAt: new Date("2026-08-04T00:00:00.000Z")
+      }),
+      progressFixture({
+        userId: user1._id,
+        status: "recovery_completed",
+        selectedMode: "recovery",
+        startedAt: new Date("2026-08-03T01:00:00.000Z"),
+        completedAt: new Date("2026-08-10T00:01:00.000Z"),
+        createdAt: new Date("2026-08-03T01:00:00.000Z"),
+        updatedAt: new Date("2026-08-10T00:01:00.000Z")
+      }),
+      progressFixture({
+        userId: user2._id,
+        status: "core_completed",
+        selectedMode: "core",
+        startedAt: until,
+        completedAt: until,
+        createdAt: until,
+        updatedAt: until
+      }),
+      progressFixture({
+        userId: user3._id,
+        status: "recovery_completed",
+        selectedMode: "recovery",
+        startedAt: new Date("2026-08-06T01:00:00.000Z"),
+        completedAt: new Date("2026-08-12T00:00:00.000Z"),
+        createdAt: new Date("2026-08-06T01:00:00.000Z"),
+        updatedAt: new Date("2026-10-01T00:00:00.000Z")
+      })
+    ]);
+    await models.Reflection.create([
+      {
+        userId: user0._id,
+        dayNumber: 1,
+        operationKeys: [],
+        createdAt: new Date("2026-08-03T00:00:00.000Z"),
+        updatedAt: new Date("2026-08-03T00:00:00.000Z")
+      },
+      {
+        userId: user2._id,
+        dayNumber: 1,
+        operationKeys: [],
+        createdAt: until,
+        updatedAt: until
+      }
+    ]);
+    await models.AiTrace.create([
+      {
+        userId: user0._id,
+        feature: "coach",
+        provider: "mock",
+        outcome: "success" as const,
+        promptVersion: "v1",
+        latencyMs: 2,
+        estimatedCostUsd: 0,
+        inputHash: "a".repeat(64),
+        citationCount: 0,
+        metadata: {},
+        createdAt: new Date("2026-08-31T23:59:59.999Z")
+      },
+      {
+        userId: user0._id,
+        feature: "coach",
+        provider: "mock",
+        outcome: "error" as const,
+        promptVersion: "v1",
+        latencyMs: 2,
+        estimatedCostUsd: 0,
+        inputHash: "b".repeat(64),
+        citationCount: 0,
+        metadata: {},
+        createdAt: until
+      }
+    ]);
+    await models.PilotAggregate.create([
+      { date: "2026-08-31", event: "account_export_succeeded", count: 1 },
+      { date: "2026-09-01", event: "account_deletion_succeeded", count: 1 }
+    ]);
+    await models.UserActivity.create({
+      userId: user0._id,
+      date: "2026-09-01",
+      firstSeenAt: until,
+      lastSeenAt: until
+    });
+
+    const report = await buildPilotMetrics(models, { since, until, minimumCohortSize: 5 });
+    expect(report.suppressed).toBe(false);
+    if (report.suppressed) throw new Error("The five-user aggregate should not be suppressed.");
+    expect(report.funnel).toEqual({
+      invited: 0,
+      registered: 5,
+      onboarded: 1,
+      firstMissionStarted: 3,
+      firstValidCompletion: 1
+    });
+    expect(report.completion).toEqual({
+      core: 1,
+      recovery: 0,
+      averageMinutesToFirstValidCompletion: 2_880
+    });
+    expect(report.return).toEqual({ nextDay: 0, sevenDay: 0 });
+    expect(report.reliability).toMatchObject({
+      persistedSaveRecords: 4,
+      aiInteractionCount: 1,
+      aiErrorRate: 0,
+      providerFallbackRate: 0,
+      estimatedProviderCostUsd: 0
+    });
+    expect(report.lifecycle).toEqual({ exportSuccesses: 1, deletionSuccesses: 0 });
+
+    await models.User.updateOne(
+      { _id: user4._id },
+      {
+        $set: {
+          profile: onboardingProfile("Late onboarding"),
+          onboardedAt: new Date("2026-09-02T00:00:00.000Z")
+        }
+      }
+    );
+    await models.Progress.create(
+      progressFixture({
+        userId: user4._id,
+        status: "core_completed",
+        selectedMode: "core",
+        startedAt: new Date("2026-09-02T00:00:00.000Z"),
+        completedAt: new Date("2026-09-02T00:30:00.000Z"),
+        createdAt: new Date("2026-09-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-09-02T00:30:00.000Z")
+      })
+    );
+    await models.FeatureFlag.updateOne(
+      { key: "ai-kill-switch" },
+      { $set: { enabled: true, updatedBy: "post-window-test" } }
+    );
+
+    expect(await buildPilotMetrics(models, { since, until, minimumCohortSize: 5 })).toEqual(report);
+  });
+
+  it("counts genuine read-only D1 and D7 activity by UTC calendar day and owns its lifecycle", async () => {
+    if (runtime.persistence.status !== "ready") throw new Error("MongoDB is required.");
+    const models = runtime.persistence.models;
+    let now = new Date("2026-08-01T23:59:00.000Z");
+    const accounts = await AccountService.create({
+      models,
+      curriculum: runtime.curriculum,
+      sessionConfig: configFor(guardedTestUri()).session,
+      registrationConfig: configFor(guardedTestUri()).registration,
+      now: () => now
+    });
+    let returningSession: Awaited<ReturnType<AccountService["register"]>> | undefined;
+
+    for (let index = 0; index < 5; index += 1) {
+      const protection = await accounts.issueCsrf(null);
+      const identity = await accounts.verifyCsrf(protection.sessionToken, protection.csrfToken);
+      const registered = await accounts.register(
+        identity,
+        `read-only-return-${index}@example.com`,
+        "Correct horse battery staple!"
+      );
+      if (index === 0) returningSession = registered;
+    }
+    if (returningSession === undefined) throw new Error("Expected one returning session.");
+    await models.User.collection.updateMany(
+      { email: /^read-only-return-/ },
+      {
+        $set: {
+          createdAt: new Date("2026-08-01T23:59:00.000Z"),
+          updatedAt: new Date("2026-08-01T23:59:00.000Z")
+        }
+      }
+    );
+
+    now = new Date("2026-08-02T00:01:00.000Z");
+    expect(await accounts.me(returningSession.sessionToken)).not.toBeNull();
+    now = new Date("2026-08-08T00:01:00.000Z");
+    const returning = await accounts.authenticate(returningSession.sessionToken);
+
+    const report = await buildPilotMetrics(models, {
+      since: new Date("2026-08-01T00:00:00.000Z"),
+      until: new Date("2026-08-09T00:00:00.000Z"),
+      minimumCohortSize: 5
+    });
+    expect(report.suppressed).toBe(false);
+    if (report.suppressed) throw new Error("The five-user aggregate should not be suppressed.");
+    expect(report.return).toEqual({ nextDay: 1, sevenDay: 1 });
+
+    const exported = await accounts.exportAccount(returning.identity.userId ?? "");
+    const authenticatedActivity = (
+      exported.sourceRecords as typeof exported.sourceRecords & {
+        authenticatedActivity?: Array<Record<string, unknown>>;
+      }
+    ).authenticatedActivity;
+    expect(authenticatedActivity).toHaveLength(3);
+    expect(JSON.stringify(authenticatedActivity)).not.toMatch(/userId|email|private|password/i);
+
+    await accounts.deleteAccount(returning.identity, "Correct horse battery staple!", "DELETE");
+    const activityModel = (
+      models as typeof models & {
+        UserActivity: { countDocuments(filter: { userId: string }): Promise<number> };
+      }
+    ).UserActivity;
+    expect(await activityModel.countDocuments({ userId: returning.identity.userId ?? "" })).toBe(0);
+  });
 
   it("persists editable profile and review settings across a session reload", async () => {
     const agent = request.agent(runtime.app);

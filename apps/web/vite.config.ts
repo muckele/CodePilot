@@ -13,7 +13,11 @@ function applicationRouteFallback(): Plugin {
       (pathname.startsWith("/curriculum/") ||
         pathname.startsWith("/app/") ||
         pathname === "/login" ||
-        pathname === "/register")
+        pathname === "/register" ||
+        pathname === "/reset-password" ||
+        pathname === "/privacy" ||
+        pathname === "/terms" ||
+        pathname === "/support")
     ) {
       request.url = "/";
     }
@@ -50,6 +54,6 @@ export default defineConfig({
   },
   build: {
     target: "es2022",
-    sourcemap: true
+    sourcemap: false
   }
 });

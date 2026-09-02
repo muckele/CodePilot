@@ -155,6 +155,54 @@ describe("private workspace component flows", () => {
     expect(screen.getByRole("button", { name: "Resume timer" })).toBeInTheDocument();
   });
 
+  it("keeps nested async states below the single page heading", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
+      const path = String(input);
+      if (path === "/api/v1/reviews") {
+        return Promise.resolve(jsonResponse({ due: [], upcoming: [], completed: [] }));
+      }
+      if (path === "/api/v1/reflections/periodic") {
+        return new Promise<Response>(() => undefined);
+      }
+      return Promise.reject(new Error(`Unexpected test request: ${path}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<WorkspaceExperience pathname="/app/reviews" csrfToken={"a".repeat(43)} user={user} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Prove what you can reconstruct." })
+    ).toBeInTheDocument();
+    expect(screen.getByText("Loading periodic reflections…")).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+  });
+
+  it("keeps nested error states below the single page heading", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
+      const path = String(input);
+      if (path === "/api/v1/reviews") {
+        return Promise.resolve(jsonResponse({ due: [], upcoming: [], completed: [] }));
+      }
+      if (path === "/api/v1/reflections/periodic") {
+        return Promise.reject(new Error("Periodic reflections are unavailable."));
+      }
+      return Promise.reject(new Error(`Unexpected test request: ${path}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<WorkspaceExperience pathname="/app/reviews" csrfToken={"a".repeat(43)} user={user} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Prove what you can reconstruct." })
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "CodeLift could not reach its Node API. Your saved data was not changed."
+      )
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+  });
+
   it("renders a grounded note answer with a resolvable citation panel", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input, init) => {
       const path = String(input);

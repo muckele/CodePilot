@@ -6,7 +6,12 @@ import helmet from "helmet";
 import { createAccountRouter, type AccountRuntime } from "./account/router.js";
 import type { ApiConfig } from "./config.js";
 import type { CurriculumRuntime } from "./curriculum/runtime.js";
-import { HttpProblem, notFoundHandler, problemErrorHandler, sendProblem } from "./http/problem.js";
+import {
+  createProblemErrorHandler,
+  HttpProblem,
+  notFoundHandler,
+  sendProblem
+} from "./http/problem.js";
 import {
   assignRequestId,
   logRequests,
@@ -190,7 +195,7 @@ export function createApp(options: CreateAppOptions): express.Express {
   );
 
   app.use(notFoundHandler);
-  app.use(problemErrorHandler);
+  app.use(createProblemErrorHandler(logger));
 
   return app;
 }

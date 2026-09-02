@@ -5,9 +5,11 @@ import {
   deleteAccountRequestSchema,
   loginRequestSchema,
   meResponseSchema,
+  mvpConfigurationResponseSchema,
   onboardingRequestSchema,
   onboardingResponseSchema,
   problemDetailsSchema,
+  passwordResetRequestSchema,
   progressDayResponseSchema,
   progressEvidenceRequestSchema,
   progressReflectionRequestSchema,
@@ -34,6 +36,7 @@ export type MeResponse = ReturnType<typeof meResponseSchema.parse>;
 export type OnboardingResponse = ReturnType<typeof onboardingResponseSchema.parse>;
 export type AuthenticatedTodayResponse = ReturnType<typeof authenticatedTodayResponseSchema.parse>;
 export type ProgressDayResponse = ReturnType<typeof progressDayResponseSchema.parse>;
+export type MvpConfigurationResponse = ReturnType<typeof mvpConfigurationResponseSchema.parse>;
 
 export type AccountApiErrorKind = "network" | "problem" | "malformed" | "request-validation";
 
@@ -252,6 +255,13 @@ export function fetchMe(signal?: AbortSignal): Promise<MeResponse> {
   });
 }
 
+export function fetchMvpConfiguration(signal?: AbortSignal): Promise<MvpConfigurationResponse> {
+  return requestJson("/api/v1/config", {
+    responseContract: mvpConfigurationResponseSchema,
+    ...(signal === undefined ? {} : { signal })
+  });
+}
+
 export function registerAccount(input: unknown, csrfToken: string): Promise<AuthSessionResponse> {
   return requestJson("/api/v1/auth/register", {
     method: "POST",
@@ -273,6 +283,14 @@ export function loginAccount(input: unknown, csrfToken: string): Promise<AuthSes
 export function logoutAccount(csrfToken: string): Promise<void> {
   return requestNoContent("/api/v1/auth/logout", {
     method: "POST",
+    csrfToken
+  });
+}
+
+export function resetPassword(input: unknown, csrfToken: string): Promise<void> {
+  return requestNoContent("/api/v1/auth/reset-password", {
+    method: "POST",
+    body: parseRequest(passwordResetRequestSchema, input),
     csrfToken
   });
 }

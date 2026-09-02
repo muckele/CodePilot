@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { expect, type Page, type TestInfo } from "@playwright/test";
 
 import { E2E_BASE_URL } from "./environment.js";
+import { issueE2eInvitation } from "./database.js";
 
 export interface TestAccount {
   readonly email: string;
@@ -106,6 +107,7 @@ export async function provisionAccount(
   options: ProvisionOptions = {}
 ): Promise<string> {
   const protection = await csrfToken(page);
+  const invitationToken = await issueE2eInvitation(account.email);
   const registration = await page.request.post("/api/v1/auth/register", {
     headers: {
       Origin: E2E_BASE_URL,
@@ -113,7 +115,8 @@ export async function provisionAccount(
     },
     data: {
       email: account.email,
-      password: account.password
+      password: account.password,
+      invitationToken
     }
   });
   const authenticated = await responseJson<AuthResponse>(registration, "Account registration");
@@ -132,7 +135,8 @@ export async function registerAndOnboardWithKeyboard(
   page: Page,
   account: TestAccount
 ): Promise<string> {
-  await page.goto("/register");
+  const invitationToken = await issueE2eInvitation(account.email);
+  await page.goto(`/register#invite=${invitationToken}`);
   await expect(page.getByRole("heading", { name: "Create a place to return to." })).toBeVisible();
 
   const email = page.getByLabel("Email address", { exact: true });

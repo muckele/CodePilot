@@ -20,17 +20,20 @@ output and indexed note text are untrusted data.
   hatch or browser provider SDK.
 - all user-owned reads/writes include authenticated `userId`; real-Mongo tests
   prove account and note isolation.
-- completion requires explicit evidence and reflection; expected versions and
-  idempotency prevent false/replayed state.
+- completion requires explicit evidence and reflection; reflection saves and
+  terminal completion serialize through one transactional progress version so
+  a concurrent draft cannot invalidate a completed mission.
 - indexed chunks carry source/version/user metadata; retrieval returns support
   labels and citations or abstains; source/account deletion removes vectors.
 - provider secrets are backend-only; remote execution requires configuration,
-  profile opt-in, per-request consent, timeout/retry, strict JSON output, and
-  `store: false`; kill switch forces deterministic mock without contacting any
-  configured provider.
+  an HTTPS OpenAI endpoint with redirects rejected, profile opt-in, per-request
+  consent, timeout/retry, a 64 KiB streamed response limit, strict JSON output,
+  and `store: false`; kill switch forces deterministic mock without contacting
+  any configured provider.
 - traces minimize private data using hashes and bounded metadata.
 - planners use feature flags, unlock rules, read-only proposals, hard budgets,
-  duplicate detection, terminal reasons, and authenticated approval/revision.
+  duplicate detection, terminal reasons, and an atomic authenticated
+  approval/revision claim before any decision work.
 - containers run as non-root; Compose uses health/readiness checks and a private
   service topology suitable for a local stack.
 
@@ -51,9 +54,14 @@ fails high/critical dependency advisories.
 ## Data lifecycle
 
 Account deletion requires password re-verification and `DELETE` confirmation,
-then transactionally removes progress, reflections, XP, user achievements,
+then acquires the same transactional User write fence used by user-owned
+creates/upserts and removes progress, reflections, XP, user achievements,
 skills, reviews, misconceptions, Error Museum, portfolio, AI traces, eval runs,
 indexed sources/embeddings, agent runs, job applications, sessions, and user.
+That shared fence prevents an already-authenticated in-flight request from
+recreating an orphan record after deletion commits. Password-reset issuance
+revokes older unused links; a successful reset revokes every sibling link and
+session.
 See the [data lifecycle runbook](docs/runbooks/data-lifecycle.md).
 
 ## Secrets

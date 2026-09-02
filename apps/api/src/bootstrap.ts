@@ -32,6 +32,7 @@ export async function bootstrapApi(options: BootstrapApiOptions): Promise<Bootst
   const account = await initializeAccountRuntime(persistence, {
     curriculum,
     sessionConfig: options.config.session,
+    registrationConfig: options.config.registration,
     aiConfig: options.config.ai
   });
   const app = createApp({

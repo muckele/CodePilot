@@ -1,0 +1,93 @@
+# Private-pilot deployment example. This is intentionally vendor-neutral:
+# TLS terminates at the platform ingress in front of `web`; Mongo is a managed
+# external replica set; secrets are injected by the deployment platform.
+name: codelift-private-pilot
+
+services:
+  api:
+    image: ${CODELIFT_API_IMAGE:?Set CODELIFT_API_IMAGE to an immutable image reference}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs: [/tmp]
+    environment:
+      NODE_ENV: production
+      API_PORT: "4000"
+      WEB_ORIGIN: ${WEB_ORIGIN:?Set WEB_ORIGIN to the exact HTTPS browser origin}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:?Set TRUST_PROXY_HOPS to the exact trusted ingress count (0..2)}
+      PERSISTENCE_MODE: required
+      MONGO_URI: ${MONGO_URI:?Inject the managed Mongo replica-set URI from a secret manager}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:-codelift}
+      REGISTRATION_MODE: invite_only
+      AI_PROVIDER: mock
+      AI_EXTERNAL_ENABLED: "false"
+      AI_AGENT_ENABLED: "false"
+    expose: ["4000"]
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/ready').then(r=>{if(!r.ok)process.exit(1)})"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    networks: [private]
+
+  web:
+    image: ${CODELIFT_WEB_IMAGE:?Set CODELIFT_WEB_IMAGE to an immutable image reference}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${CODELIFT_INGRESS_BIND:-127.0.0.1:8080}:8080"
+    networks: [private]
+
+  seed:
+    profiles: ["release"]
+    image: ${CODELIFT_API_IMAGE:?Set CODELIFT_API_IMAGE to an immutable image reference}
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs: [/tmp]
+    environment:
+      NODE_ENV: production
+      WEB_ORIGIN: ${WEB_ORIGIN:?Set WEB_ORIGIN to the exact HTTPS browser origin}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:?Set TRUST_PROXY_HOPS to the exact trusted ingress count (0..2)}
+      PERSISTENCE_MODE: required
+      MONGO_URI: ${MONGO_URI:?Inject the managed Mongo replica-set URI from a secret manager}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:-codelift}
+      REGISTRATION_MODE: closed
+      AI_PROVIDER: mock
+      AI_EXTERNAL_ENABLED: "false"
+      AI_AGENT_ENABLED: "false"
+    command: ["node", "apps/api/dist/seed/cli.js", "seed"]
+    restart: "no"
+    networks: [private]
+
+  # Optional diagnostic profile only. The API uses deterministic `mock` and
+  # never depends on this service for health or readiness.
+  ai:
+    profiles: ["optional-ai"]
+    image: ${CODELIFT_AI_IMAGE:?Set CODELIFT_AI_IMAGE to an immutable image reference}
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs: [/tmp]
+    expose: ["8000"]
+    networks: [private]
+
+networks:
+  private:
+    internal: false

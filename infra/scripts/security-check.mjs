@@ -207,6 +207,16 @@ const requiredControls = [
     markers: ["tokenHash", "csrfHash"]
   },
   {
+    name: "hashed single-use invitation and recovery tokens",
+    file: "apps/api/src/account/service.ts",
+    markers: ["Invitation.findOneAndUpdate", "PasswordReset.findOneAndUpdate", "digestOpaqueToken"]
+  },
+  {
+    name: "versioned secret-free account export",
+    file: "packages/contracts/src/account.ts",
+    markers: ["codelift.account-export.v1", "containsForbiddenExportKey"]
+  },
+  {
     name: "exact-origin mutation authorization",
     file: "apps/api/src/account/router.ts",
     markers: ["authenticateMutation"]
@@ -253,6 +263,11 @@ const requiredControls = [
     name: "non-root Python container",
     file: "services/ai/Dockerfile",
     markers: ["USER 65532:65532"]
+  },
+  {
+    name: "non-root web container and explicit CSP",
+    file: "apps/web/nginx.conf",
+    markers: ["Content-Security-Policy", "frame-ancestors 'none'", "immutable"]
   }
 ];
 

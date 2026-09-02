@@ -298,6 +298,145 @@ describe("AI provider boundary", () => {
     expect(result.detail).toMatch(/^[0-9a-f]{16}$/);
     expect(result.payload.evidenceBoundary).toContain("does not claim understanding");
   });
+
+  it("rejects an oversized provider body from Content-Length before JSON parsing", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("{}", {
+        status: 200,
+        headers: { "Content-Length": String(64 * 1_024 + 1) }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await new AiGateway({
+      ...mockAiConfig,
+      provider: "python_mock"
+    }).coach({
+      request: {
+        action: "explain",
+        dayNumber: 1,
+        learnerText: "",
+        allowExternal: false
+      },
+      day: dayFixture,
+      permitExternal: false
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.provider).toBe("fallback");
+    expect(result.failureKind).toBe("provider_error");
+  });
+
+  it("accepts a schema-valid provider response within the byte budget", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        provider: "python_mock",
+        heading: "Bounded provider response",
+        explanation: "The response stays within the configured byte budget.",
+        socratic_question: "Which observation would falsify the explanation?",
+        next_tiny_step: "Run one bounded check.",
+        evidence_boundary: "Learner-authored evidence remains required.",
+        safety_note: "Educational guidance only."
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await new AiGateway({
+      ...mockAiConfig,
+      provider: "python_mock",
+      maxRetries: 2
+    }).coach({
+      request: {
+        action: "explain",
+        dayNumber: 1,
+        learnerText: "",
+        allowExternal: false
+      },
+      day: dayFixture,
+      permitExternal: false
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.provider).toBe("python_mock");
+    expect(result.outcome).toBe("success");
+    expect(result.payload.heading).toBe("Bounded provider response");
+  });
+
+  it("does not retry an oversized retryable provider error body", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("upstream unavailable", {
+        status: 503,
+        headers: { "Content-Length": String(64 * 1_024 + 1) }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await new AiGateway({
+      ...mockAiConfig,
+      provider: "python_mock",
+      maxRetries: 2
+    }).coach({
+      request: {
+        action: "explain",
+        dayNumber: 1,
+        learnerText: "",
+        allowExternal: false
+      },
+      day: dayFixture,
+      permitExternal: false
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.provider).toBe("fallback");
+    expect(result.failureKind).toBe("provider_error");
+  });
+
+  it("cancels a chunked provider body as soon as the byte budget is exceeded", async () => {
+    let cancelled = false;
+    const oversizedJson = JSON.stringify({
+      heading: "Bounded",
+      explanation: "x".repeat(70 * 1_024),
+      socraticQuestion: "What would falsify this?",
+      nextTinyStep: "Run one check.",
+      evidenceBoundary: "Evidence remains learner-authored.",
+      safetyNote: "Educational guidance only."
+    });
+    const encoded = new TextEncoder().encode(oversizedJson);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let offset = 0; offset < encoded.length; offset += 4_096) {
+          controller.enqueue(encoded.slice(offset, offset + 4_096));
+        }
+        controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      }
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await new AiGateway({
+      ...mockAiConfig,
+      provider: "python_mock"
+    }).coach({
+      request: {
+        action: "explain",
+        dayNumber: 1,
+        learnerText: "",
+        allowExternal: false
+      },
+      day: dayFixture,
+      permitExternal: false
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.provider).toBe("fallback");
+    expect(result.failureKind).toBe("provider_error");
+    expect(cancelled).toBe(true);
+  });
 });
 
 describe("shared local behavioral evaluation", () => {

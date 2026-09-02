@@ -1217,6 +1217,40 @@ a {
   margin: 0;
 }
 
+.footer-links,
+.policy-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.footer-links a,
+.policy-page a,
+.policy-links a {
+  color: var(--color-violet-deep);
+  font-weight: 750;
+}
+
+.policy-page {
+  max-width: 58rem;
+}
+
+.policy-page h2 {
+  margin-top: var(--space-8);
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+}
+
+.policy-page > p,
+.policy-page li {
+  line-height: 1.75;
+}
+
+.policy-page__return {
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--color-border);
+}
+
 @keyframes gentle-float {
   0%,
   100% {

@@ -6,7 +6,11 @@ import { createApp } from "../app.js";
 import { bootstrapApi } from "../bootstrap.js";
 import type { ApiConfig } from "../config.js";
 import type { CurriculumRuntime } from "../curriculum/runtime.js";
-import type { RequestLogRecord, StructuredRequestLogger } from "../middleware/request-context.js";
+import type {
+  RequestLogRecord,
+  ServerErrorLogRecord,
+  StructuredRequestLogger
+} from "../middleware/request-context.js";
 
 const canonicalCurriculumPath = fileURLToPath(
   new URL("../../../../codelift_ai_curriculum_seed_v2_2026.json", import.meta.url)
@@ -162,6 +166,11 @@ function testConfig(curriculumPath: string, nodeEnv: ApiConfig["nodeEnv"] = "tes
       secureCookie: false,
       idleTtlMs: 7 * 24 * 60 * 60 * 1000,
       absoluteTtlMs: 30 * 24 * 60 * 60 * 1000
+    },
+    registration: {
+      mode: "open",
+      invitationTtlMs: 7 * 24 * 60 * 60 * 1_000,
+      passwordResetTtlMs: 60 * 60 * 1_000
     },
     ai: {
       provider: "mock",
@@ -398,10 +407,16 @@ describe("M1 API integration", () => {
         throw new Error(`sensitive source: ${canonicalCurriculumPath}`);
       }
     };
+    const errorRecords: ServerErrorLogRecord[] = [];
     const productionApp = createApp({
       config: testConfig(canonicalCurriculumPath, "production"),
       curriculum: failingCurriculum,
-      logger: silentLogger
+      logger: {
+        info() {},
+        error(record) {
+          errorRecords.push(record);
+        }
+      }
     });
 
     const response = await request(productionApp).get("/api/v1/curriculum/1");
@@ -417,6 +432,17 @@ describe("M1 API integration", () => {
     expect(serializedProblem).not.toContain("sensitive source");
     expect(serializedProblem).not.toContain(canonicalCurriculumPath);
     expect(serializedProblem).not.toContain("stack");
+    expect(errorRecords).toHaveLength(1);
+    expect(errorRecords[0]).toMatchObject({
+      event: "http.server_error",
+      requestId: response.body.requestId,
+      method: "GET",
+      route: "/api/v1/curriculum/:dayNumber",
+      statusCode: 500,
+      errorName: "Error"
+    });
+    expect(JSON.stringify(errorRecords[0])).not.toContain("sensitive source");
+    expect(response.headers["x-request-id"]).toBe(response.body.requestId);
   });
 
   it("writes privacy-minimized structured request logs", async () => {

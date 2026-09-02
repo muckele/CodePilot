@@ -11,8 +11,10 @@ without a paid API key or downloaded model.
 
 ## What is implemented
 
-- registration, login/logout, onboarding, protected routes, preferences, and
-  transactional account deletion;
+- closed/invitation-only/open registration policy, email-bound one-time
+  invitations, operator-issued password recovery, all-session reset revocation,
+  login/logout, onboarding, protected routes, preferences, versioned account
+  export, and transactional account deletion;
 - Argon2id passwords, hashed opaque HTTP-only sessions, exact-origin CSRF,
   Helmet, explicit CORS, body/rate limits, request IDs, and generic auth errors;
 - 365 deterministic display-ready missions with a 30-minute Core path, ≤5-minute
@@ -110,7 +112,8 @@ Install JavaScript and Python dependencies:
 ```bash
 pnpm install --frozen-lockfile
 python3.12 -m venv services/ai/.venv
-services/ai/.venv/bin/pip install -e 'services/ai[dev]'
+services/ai/.venv/bin/pip install uv==0.12.3
+services/ai/.venv/bin/uv sync --project services/ai --locked --extra dev
 ```
 
 Start the Mongo replica set, export the documented native connection, seed, then
@@ -164,27 +167,91 @@ container and falls back deterministically if `python_mock` becomes unavailable.
 `.env.example` is documentation; the application does not automatically load a
 root `.env`.
 
-| Variable                           | Purpose                                             | Default                  |
-| ---------------------------------- | --------------------------------------------------- | ------------------------ |
-| `NODE_ENV`                         | development/test/production policy                  | `development`            |
-| `API_PORT`                         | Express port                                        | `4000`                   |
-| `WEB_ORIGIN`                       | exact allowed browser origin and CSRF origin        | `http://localhost:5173`  |
-| `TRUST_PROXY_HOPS`                 | trusted reverse proxies used for client IP policy   | `0`                      |
-| `PERSISTENCE_MODE`                 | `optional` public-preview degradation or `required` | production: `required`   |
-| `MONGO_URI` / `MONGO_DB_NAME`      | Mongo replica connection and database               | documented local values  |
-| `AI_PROVIDER`                      | `mock`, `python_mock`, `local`, or `openai`         | `mock`                   |
-| `AI_PYTHON_BASE_URL`               | internal FastAPI URL                                | `http://127.0.0.1:8000`  |
-| `AI_LOCAL_BASE_URL`                | Ollama-compatible URL                               | `http://127.0.0.1:11434` |
-| `AI_TIMEOUT_MS` / `AI_MAX_RETRIES` | bounded provider policy                             | `8000` / `1`             |
-| `AI_EXTERNAL_ENABLED`              | server-wide remote-provider permission              | `false`                  |
-| `AI_AGENT_ENABLED`                 | bounded-agent mode permission                       | `false`                  |
-| `OPENAI_BASE_URL`                  | optional Responses API-compatible base              | official API             |
-| `OPENAI_MODEL` / `OPENAI_API_KEY`  | backend-only optional model and secret              | empty                    |
+| Variable                           | Purpose                                             | Default                   |
+| ---------------------------------- | --------------------------------------------------- | ------------------------- |
+| `NODE_ENV`                         | development/test/production policy                  | `development`             |
+| `API_PORT`                         | Express port                                        | `4000`                    |
+| `WEB_ORIGIN`                       | exact allowed browser origin and CSRF origin        | `http://localhost:5173`   |
+| `TRUST_PROXY_HOPS`                 | trusted reverse proxies used for client IP policy   | dev: `0`; prod: required  |
+| `PERSISTENCE_MODE`                 | `optional` public-preview degradation or `required` | production: `required`    |
+| `MONGO_URI` / `MONGO_DB_NAME`      | Mongo replica connection and database               | documented local values   |
+| `REGISTRATION_MODE`                | `closed`, `invite_only`, or development-only `open` | production: `invite_only` |
+| `AI_PROVIDER`                      | `mock`, `python_mock`, `local`, or `openai`         | `mock`                    |
+| `AI_PYTHON_BASE_URL`               | internal FastAPI URL                                | `http://127.0.0.1:8000`   |
+| `AI_LOCAL_BASE_URL`                | Ollama-compatible URL                               | `http://127.0.0.1:11434`  |
+| `AI_TIMEOUT_MS` / `AI_MAX_RETRIES` | bounded provider policy                             | `8000` / `1`              |
+| `AI_EXTERNAL_ENABLED`              | server-wide remote-provider permission              | `false`                   |
+| `AI_AGENT_ENABLED`                 | bounded-agent mode permission                       | `false`                   |
+| `OPENAI_BASE_URL`                  | optional Responses API-compatible base              | official API              |
+| `OPENAI_MODEL` / `OPENAI_API_KEY`  | backend-only optional model and secret              | empty                     |
 
 Selecting `openai` is not sufficient by itself. External execution also
 requires the server flag, the learner’s `ask_before_external` profile choice,
 per-request consent, and a disabled kill switch. Requests use the Responses API
 with strict JSON-schema output and `store: false`; model IDs come from config.
+
+Private-pilot invitations have a fixed seven-day lifetime and password-reset
+links have a fixed one-hour lifetime. These are application policies, not
+environment variables; operators revoke and reissue links instead of changing
+their validity at runtime.
+
+Production additionally rejects an implicit or HTTP web origin, optional
+persistence, missing Mongo, unsafe OpenAI configuration, and open registration.
+Open registration remains a future public-launch project because verified
+email, automated recovery, and abuse operations are not part of this pilot.
+
+## Private-pilot access and account lifecycle
+
+Run operator commands only from an access-controlled terminal with the managed
+Mongo URI injected. The raw bearer URL is printed once; only a SHA-256 digest is
+stored. Share it through the approved out-of-band enrollment channel, never in
+logs, screenshots, analytics, issues, or chat archives.
+
+```bash
+MONGO_URI='<managed replica-set URI>' \
+  pnpm operator:access issue-invite \
+  --email learner@example.test \
+  --base-url https://pilot.example.test \
+  --issuer release-owner
+
+MONGO_URI='<managed replica-set URI>' \
+  pnpm operator:access revoke-invite --id '<invitation id>'
+
+MONGO_URI='<managed replica-set URI>' \
+  pnpm operator:access issue-reset \
+  --email learner@example.test \
+  --base-url https://pilot.example.test \
+  --issuer support-operator
+```
+
+An invitation is bound to the normalized email and consumed atomically with
+account creation. A reset is single-use, replaces the Argon2id password, and
+revokes every active session. The browser never renders link-supplied tokens.
+Privacy, terms, and support are public at `/privacy`, `/terms`, and `/support`.
+Authenticated settings provide a versioned JSON export plus deliberate account
+deletion. See the [data lifecycle runbook](docs/runbooks/data-lifecycle.md).
+
+Aggregate pilot measurement is available in human and JSON forms and suppresses
+cohorts smaller than five:
+
+```bash
+MONGO_URI='<managed replica-set URI>' \
+  pnpm mvp:metrics --since 2026-08-10T00:00:00Z
+
+MONGO_URI='<managed replica-set URI>' \
+  pnpm mvp:metrics --since 2026-08-10T00:00:00Z --json
+```
+
+The report contains no email, account ID, private note/evidence/reflection, or
+per-learner row. `--since` and `--until` are UTC-midnight boundaries for the
+half-open `[since, until)` window; omitted `--until` means the current UTC
+midnight, excluding the still-open day. The fixed hypothesis, exact D1/D7 and
+seven-day-completion semantics, indicators, five research questions, and stop
+criteria are in the [pilot plan](docs/mvp-pilot.md).
+
+The [observability adapter](docs/runbooks/observability.md) maps sanitized JSON
+request/error events, `/health`, `/ready`, AI traces, and feature flags to
+bounded operational metrics without selecting a vendor or adding user tracking.
 
 ## Curriculum and seed
 
@@ -238,6 +305,10 @@ pnpm eval:local
 pnpm mcp:check
 pnpm security:check
 pnpm security:audit
+pnpm python:lock-check
+pnpm python:audit
+pnpm image:audit
+pnpm mvp:check
 pnpm performance:check
 pnpm compose:check
 pnpm compose:smoke
@@ -258,16 +329,17 @@ checks, but its report is not revision-bound; the aggregate quality gate
 requires a clean source tree at both ends of the smoke. `fresh-clone:check`
 requires a clean committed revision, clones it without hardlinks into a
 temporary directory, performs the frozen offline JavaScript install, verifies
-the interpreter is Python 3.12, resolves the Python development dependencies
-from the ranges in `pyproject.toml`, builds/tests, and repeats the fresh-volume
-Compose smoke. This is clean-source compatibility evidence, not a claim of
-literal bit-for-bit reproducibility: JavaScript uses the frozen lockfile, while
-Python dependencies remain range-resolved. The aggregate quality report runs
+the interpreter is Python 3.12, synchronizes Python development dependencies
+from `services/ai/uv.lock` with pinned uv 0.12.3, builds/tests, and repeats the
+fresh-volume Compose smoke. JavaScript and Python both use checked-in locks.
+The aggregate quality report runs
 these commands itself and rejects stale reports, a dirty revision, an unpinned
 toolchain, or source-mismatched clone/container evidence.
 
 Python checks are included in the root gates and are also available as
-`pnpm python:check`.
+`pnpm python:check`. The release gate also verifies the Python lock, audits the
+locked Python and JavaScript graphs, scans each production image for
+HIGH/CRITICAL vulnerabilities, and checks the M16 source/configuration contract.
 
 ## Evaluation, privacy, and cost
 
@@ -323,12 +395,17 @@ the real Playwright visual/accessibility journey. They contain no personal data.
 
 See [deployment](docs/deployment.md), [release checklist](docs/release-checklist.md),
 [incident response](docs/runbooks/incident-response.md), and
-[data lifecycle](docs/runbooks/data-lifecycle.md).
+[data lifecycle](docs/runbooks/data-lifecycle.md). The
+[deployment decision packet](docs/deployment-decision.md) compares three current
+pilot options without provisioning them, and [release governance](docs/release-governance.md)
+records the draft-PR/default-branch/protection procedure.
 
 Production needs TLS, exact `WEB_ORIGIN`, private service networking, secret
 injection, Mongo replica availability/backups, resource budgets, monitoring,
 and readiness routing. The repository intentionally does not fabricate a hosted
-production URL.
+production URL. A clean source gate means source-ready; a live pilot additionally
+requires an approved environment, centralized alerts, a successful isolated
+backup restore, and the guarded HTTPS journey documented in the deployment guide.
 
 ## Tradeoffs and limitations
 

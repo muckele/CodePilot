@@ -1,9 +1,11 @@
 import {
   accountUserSchema,
+  accountExportSchema,
   authenticatedTodayResponseSchema,
   onboardingProfileSchema,
   progressDayResponseSchema,
   type AccountUser,
+  type AccountExport,
   type AuthenticatedTodayResponse,
   type CurriculumSeedDay,
   type OnboardingProfile,
@@ -14,7 +16,7 @@ import {
 } from "@codelift/contracts";
 import type { ClientSession, HydratedDocument, Types } from "mongoose";
 
-import type { SessionConfig } from "../config.js";
+import type { RegistrationConfig, SessionConfig } from "../config.js";
 import type { CurriculumRuntime } from "../curriculum/runtime.js";
 import { HttpProblem } from "../http/problem.js";
 import type {
@@ -24,6 +26,7 @@ import type {
   SessionRecord,
   UserRecord
 } from "../persistence/models.js";
+import { withActiveAccountWrite } from "../persistence/active-account-write.js";
 import {
   createDummyPasswordHash,
   createOpaqueToken,
@@ -81,6 +84,15 @@ function invalidCredentials(): HttpProblem {
   );
 }
 
+function accountDeletionCredentialsRejected(): HttpProblem {
+  return accountProblem(
+    "account-deletion-failed",
+    "Account deletion failed",
+    401,
+    "The account was not deleted. Check the current password and confirmation."
+  );
+}
+
 function sessionExpired(): HttpProblem {
   return accountProblem(
     "session-expired",
@@ -96,6 +108,24 @@ function authenticationRequired(): HttpProblem {
     "Authentication required",
     401,
     "Sign in to continue to this private workspace."
+  );
+}
+
+function accessTokenRejected(): HttpProblem {
+  return accountProblem(
+    "account-access-rejected",
+    "Unable to complete account access",
+    400,
+    "The account access link is invalid, expired, already used, or does not match this request."
+  );
+}
+
+function exportTooLarge(): HttpProblem {
+  return accountProblem(
+    "export-too-large",
+    "Account export too large",
+    413,
+    "The bounded private-pilot export exceeded its record or byte budget. Contact support for an isolated export."
   );
 }
 
@@ -213,10 +243,62 @@ function reflectionIsComplete(reflection: ReflectionDocument | null): boolean {
   );
 }
 
+const forbiddenExportKeys = new Set([
+  "_id",
+  "__v",
+  "userId",
+  "consumedByUserId",
+  "reviewItemId",
+  "password",
+  "passwordHash",
+  "token",
+  "tokenHash",
+  "csrfHash",
+  "sessionSecret",
+  "credential"
+]);
+
+function sanitizeExportRecord(value: unknown): Record<string, unknown> {
+  const serialized = JSON.stringify(value, (key, child: unknown) => {
+    if (forbiddenExportKeys.has(key) || key.toLowerCase().endsWith("hash")) {
+      return undefined;
+    }
+    return child;
+  });
+  const parsed: unknown = JSON.parse(serialized);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Export record did not serialize to an object.");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+interface ExportBudget {
+  bytes: number;
+}
+
+const maxExportRecordsPerCollection = 1_000;
+const maxExportPayloadBytes = 8 * 1_024 * 1_024;
+
+async function collectBoundedExportRecords(
+  values: AsyncIterable<unknown>,
+  budget: ExportBudget
+): Promise<Record<string, unknown>[]> {
+  const records: Record<string, unknown>[] = [];
+  for await (const value of values) {
+    if (records.length >= maxExportRecordsPerCollection) throw exportTooLarge();
+    const record = sanitizeExportRecord(value);
+    budget.bytes += Buffer.byteLength(JSON.stringify(record), "utf8");
+    if (budget.bytes > maxExportPayloadBytes) throw exportTooLarge();
+    records.push(record);
+  }
+  return records;
+}
+
 export class AccountService {
   readonly #models: CodeLiftModels;
   readonly #curriculum: CurriculumRuntime;
   readonly #sessionConfig: SessionConfig;
+  readonly #registrationConfig: RegistrationConfig;
   readonly #dummyPasswordHash: string;
   readonly #now: () => Date;
 
@@ -224,12 +306,14 @@ export class AccountService {
     models: CodeLiftModels;
     curriculum: CurriculumRuntime;
     sessionConfig: SessionConfig;
+    registrationConfig: RegistrationConfig;
     dummyPasswordHash: string;
     now?: () => Date;
   }) {
     this.#models = options.models;
     this.#curriculum = options.curriculum;
     this.#sessionConfig = options.sessionConfig;
+    this.#registrationConfig = options.registrationConfig;
     this.#dummyPasswordHash = options.dummyPasswordHash;
     this.#now = options.now ?? (() => new Date());
   }
@@ -238,6 +322,7 @@ export class AccountService {
     models: CodeLiftModels;
     curriculum: CurriculumRuntime;
     sessionConfig: SessionConfig;
+    registrationConfig: RegistrationConfig;
     now?: () => Date;
   }): Promise<AccountService> {
     const dummyPasswordHash = await createDummyPasswordHash();
@@ -275,12 +360,38 @@ export class AccountService {
       ],
       databaseSession === undefined ? undefined : { session: databaseSession }
     );
+    if (userId !== null) {
+      await this.#recordAuthenticatedActivity(userId, now, databaseSession);
+    }
 
     return {
       sessionToken,
       csrfToken,
       expiresAt
     };
+  }
+
+  async #recordAuthenticatedActivity(
+    userId: Types.ObjectId,
+    now: Date,
+    databaseSession?: ClientSession
+  ): Promise<void> {
+    const write = async (session: ClientSession) => {
+      await this.#models.UserActivity.updateOne(
+        { userId, date: now.toISOString().slice(0, 10) },
+        {
+          $min: { firstSeenAt: now },
+          $max: { lastSeenAt: now }
+        },
+        { session, upsert: true, setDefaultsOnInsert: true }
+      );
+    };
+
+    if (databaseSession !== undefined) {
+      await write(databaseSession);
+      return;
+    }
+    await withActiveAccountWrite(this.#models, userId.toString(), sessionExpired, write);
   }
 
   async #findSession(rawToken: string): Promise<SessionDocument | null> {
@@ -361,7 +472,12 @@ export class AccountService {
     };
   }
 
-  async register(identity: SessionIdentity, email: string, password: string): Promise<AuthResult> {
+  async register(
+    identity: SessionIdentity,
+    email: string,
+    password: string,
+    invitationToken?: string
+  ): Promise<AuthResult> {
     if (identity.userId !== null) {
       throw accountProblem(
         "progress-conflict",
@@ -369,6 +485,14 @@ export class AccountService {
         409,
         "Sign out before creating a different account."
       );
+    }
+
+    if (this.#registrationConfig.mode === "closed") {
+      throw accessTokenRejected();
+    }
+
+    if (this.#registrationConfig.mode === "invite_only" && invitationToken === undefined) {
+      throw accessTokenRejected();
     }
 
     const passwordHash = await hashPassword(password);
@@ -393,6 +517,29 @@ export class AccountService {
           throw new Error("User creation did not return a document.");
         }
 
+        if (this.#registrationConfig.mode === "invite_only") {
+          const invitation = await this.#models.Invitation.findOneAndUpdate(
+            {
+              tokenHash: digestOpaqueToken(invitationToken ?? ""),
+              purpose: "registration",
+              email,
+              expiresAt: { $gt: this.#now() },
+              consumedAt: null,
+              revokedAt: null
+            },
+            {
+              $set: {
+                consumedAt: this.#now(),
+                consumedByUserId: user._id
+              }
+            },
+            { session: databaseSession, returnDocument: "after" }
+          );
+          if (invitation === null) {
+            throw accessTokenRejected();
+          }
+        }
+
         await this.#models.Session.deleteOne(
           { _id: identity.sessionId },
           { session: databaseSession }
@@ -405,7 +552,9 @@ export class AccountService {
       });
     } catch (error: unknown) {
       if (isDuplicateKeyError(error)) {
-        throw invalidCredentials();
+        throw this.#registrationConfig.mode === "invite_only"
+          ? accessTokenRejected()
+          : invalidCredentials();
       }
       throw error;
     } finally {
@@ -440,6 +589,14 @@ export class AccountService {
 
     try {
       await databaseSession.withTransaction(async () => {
+        const activeAccount = await this.#models.User.updateOne(
+          { _id: user._id, passwordHash: user.passwordHash },
+          { $inc: { writeFence: 1 } },
+          { session: databaseSession }
+        );
+        if (activeAccount.matchedCount !== 1) {
+          throw invalidCredentials();
+        }
         await this.#models.Session.deleteOne(
           { _id: identity.sessionId },
           { session: databaseSession }
@@ -466,6 +623,58 @@ export class AccountService {
     };
   }
 
+  async resetPassword(rawToken: string, password: string): Promise<void> {
+    const passwordHash = await hashPassword(password);
+    const now = this.#now();
+    const databaseSession = await this.#models.User.db.startSession();
+
+    try {
+      await databaseSession.withTransaction(async () => {
+        const reset = await this.#models.PasswordReset.findOneAndUpdate(
+          {
+            tokenHash: digestOpaqueToken(rawToken),
+            purpose: "password_reset",
+            expiresAt: { $gt: now },
+            consumedAt: null,
+            revokedAt: null
+          },
+          { $set: { consumedAt: now } },
+          { session: databaseSession, returnDocument: "after" }
+        );
+        if (reset === null) {
+          throw accessTokenRejected();
+        }
+
+        const updated = await this.#models.User.updateOne(
+          { _id: reset.userId },
+          { $set: { passwordHash } },
+          { session: databaseSession, runValidators: true }
+        );
+        if (updated.matchedCount !== 1) {
+          throw accessTokenRejected();
+        }
+
+        await this.#models.PasswordReset.updateMany(
+          {
+            userId: reset.userId,
+            _id: { $ne: reset._id },
+            consumedAt: null,
+            revokedAt: null
+          },
+          { $set: { revokedAt: now } },
+          { session: databaseSession }
+        );
+
+        await this.#models.Session.deleteMany(
+          { userId: reset.userId },
+          { session: databaseSession }
+        );
+      });
+    } finally {
+      await databaseSession.endSession();
+    }
+  }
+
   async authenticate(rawSessionToken: string | null): Promise<{
     identity: SessionIdentity;
     user: AccountUser;
@@ -484,6 +693,7 @@ export class AccountService {
       await this.#models.Session.deleteOne({ _id: session._id });
       throw sessionExpired();
     }
+    await this.#recordAuthenticatedActivity(user._id, this.#now());
 
     return {
       identity: {
@@ -507,6 +717,7 @@ export class AccountService {
       await this.#models.Session.deleteOne({ _id: session._id });
       return null;
     }
+    await this.#recordAuthenticatedActivity(user._id, this.#now());
     return toUser(user);
   }
 
@@ -516,17 +727,138 @@ export class AccountService {
 
   async saveOnboarding(userId: string, profile: OnboardingProfile): Promise<AccountUser> {
     const parsedProfile = onboardingProfileSchema.parse(profile);
-    const user = await this.#models.User.findOneAndUpdate(
-      { _id: userId },
-      { $set: { profile: parsedProfile } },
-      { returnDocument: "after", runValidators: true }
-    );
+    const user = await this.#models.User.findOne({ _id: userId });
 
     if (user === null) {
       throw sessionExpired();
     }
+    user.profile = parsedProfile;
+    user.onboardedAt ??= this.#now();
+    await user.save();
 
     return toUser(user);
+  }
+
+  async exportAccount(userId: string): Promise<AccountExport> {
+    const user = await this.#models.User.findOne({ _id: userId });
+    if (user === null) {
+      throw sessionExpired();
+    }
+    const owner = user._id;
+    const serializedUser = toUser(user);
+    const budget: ExportBudget = {
+      bytes: Buffer.byteLength(JSON.stringify(serializedUser), "utf8") + 2_048
+    };
+    const progress = await collectBoundedExportRecords(
+      this.#models.Progress.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const reflections = await collectBoundedExportRecords(
+      this.#models.Reflection.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const authenticatedActivity = await collectBoundedExportRecords(
+      this.#models.UserActivity.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const reviewItems = await collectBoundedExportRecords(
+      this.#models.ReviewItem.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const misconceptions = await collectBoundedExportRecords(
+      this.#models.Misconception.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const errorMuseumEntries = await collectBoundedExportRecords(
+      this.#models.ErrorMuseumEntry.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const portfolioArtifacts = await collectBoundedExportRecords(
+      this.#models.PortfolioArtifact.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const jobApplications = await collectBoundedExportRecords(
+      this.#models.JobApplication.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const xpEvents = await collectBoundedExportRecords(
+      this.#models.XpEvent.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const achievements = await collectBoundedExportRecords(
+      this.#models.UserAchievement.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const skillEvidence = await collectBoundedExportRecords(
+      this.#models.SkillEvidence.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const aiTraces = await collectBoundedExportRecords(
+      this.#models.AiTrace.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const evalRuns = await collectBoundedExportRecords(
+      this.#models.EvalRun.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const indexedSources = await collectBoundedExportRecords(
+      this.#models.IndexedSource.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const agentRuns = await collectBoundedExportRecords(
+      this.#models.AgentRun.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+    const invitationMetadata = await collectBoundedExportRecords(
+      this.#models.Invitation.find({
+        $or: [{ consumedByUserId: owner }, { email: user.email }]
+      })
+        .lean()
+        .batchSize(25)
+        .cursor(),
+      budget
+    );
+    const passwordResetMetadata = await collectBoundedExportRecords(
+      this.#models.PasswordReset.find({ userId: owner }).lean().batchSize(25).cursor(),
+      budget
+    );
+
+    return accountExportSchema.parse({
+      schemaVersion: "codelift.account-export.v1",
+      exportedAt: this.#now().toISOString(),
+      account: serializedUser,
+      sourceRecords: {
+        progress,
+        reflections,
+        authenticatedActivity,
+        reviewItems,
+        misconceptions,
+        errorMuseumEntries,
+        portfolioArtifacts,
+        jobApplications
+      },
+      derivedRecords: {
+        xpEvents,
+        achievements,
+        skillEvidence,
+        aiTraces,
+        evalRuns,
+        indexedSources,
+        agentRuns,
+        invitationMetadata,
+        passwordResetMetadata
+      }
+    });
+  }
+
+  async recordPilotEvent(
+    event: "account_export_succeeded" | "account_deletion_succeeded"
+  ): Promise<void> {
+    await this.#models.PilotAggregate.updateOne(
+      { date: this.#now().toISOString().slice(0, 10), event },
+      { $inc: { count: 1 } },
+      { upsert: true, setDefaultsOnInsert: true }
+    );
   }
 
   async today(userId: string): Promise<AuthenticatedTodayResponse> {
@@ -645,19 +977,35 @@ export class AccountService {
     if (request.intent === "start") {
       if (progress === null) {
         try {
-          progress = await this.#models.Progress.create({
+          progress = await withActiveAccountWrite(
+            this.#models,
             userId,
-            dayNumber,
-            status: "in_progress",
-            selectedMode: request.mode,
-            evidence: [],
-            operationKeys: [request.idempotencyKey],
-            version: 1,
-            startedAt: now,
-            completedAt: null,
-            statusReason: null,
-            rescheduledFor: null
-          });
+            sessionExpired,
+            async (databaseSession) => {
+              const [created] = await this.#models.Progress.create(
+                [
+                  {
+                    userId,
+                    dayNumber,
+                    status: "in_progress",
+                    selectedMode: request.mode,
+                    evidence: [],
+                    operationKeys: [request.idempotencyKey],
+                    version: 1,
+                    startedAt: now,
+                    completedAt: null,
+                    statusReason: null,
+                    rescheduledFor: null
+                  }
+                ],
+                { session: databaseSession }
+              );
+              if (created === undefined) {
+                throw new Error("Progress creation did not return a record.");
+              }
+              return created;
+            }
+          );
         } catch (error: unknown) {
           if (!isDuplicateKeyError(error)) {
             throw error;
@@ -747,48 +1095,81 @@ export class AccountService {
       );
     }
 
-    const reflection = await this.#models.Reflection.findOne({ userId, dayNumber });
-    if (!reflectionIsComplete(reflection)) {
-      throw accountProblem(
-        "completion-reflection-required",
-        "Reflection required",
-        409,
-        "Answer all three reflection prompts before recording completion."
-      );
-    }
-
-    const updated = await this.#models.Progress.findOneAndUpdate(
-      {
+    await withActiveAccountWrite(this.#models, userId, sessionExpired, async (databaseSession) => {
+      const currentProgress = await this.#models.Progress.findOne({
         _id: progress._id,
         userId,
         dayNumber,
         status: "in_progress",
-        selectedMode: request.mode,
-        version: progress.version
-      },
-      {
-        $set: {
-          status: terminalStatus,
-          completedAt: now
-        },
-        $addToSet: {
-          operationKeys: request.idempotencyKey
-        },
-        $inc: {
-          version: 1
-        }
-      },
-      { returnDocument: "after", runValidators: true }
-    );
+        selectedMode: request.mode
+      }).session(databaseSession);
+      if (
+        currentProgress === null ||
+        (request.expectedVersion !== undefined &&
+          request.expectedVersion !== currentProgress.version)
+      ) {
+        throw accountProblem(
+          "progress-conflict",
+          "Progress conflict",
+          409,
+          "The mission changed in another request. Reload Today before completing it."
+        );
+      }
+      if (currentProgress.evidence.length === 0) {
+        throw accountProblem(
+          "completion-evidence-required",
+          "Evidence required",
+          409,
+          "Add explicit evidence before recording completion."
+        );
+      }
 
-    if (updated === null) {
-      throw accountProblem(
-        "progress-conflict",
-        "Progress conflict",
-        409,
-        "The mission changed in another request. Reload Today before completing it."
+      const currentReflection = await this.#models.Reflection.findOne({
+        userId,
+        dayNumber
+      }).session(databaseSession);
+      if (!reflectionIsComplete(currentReflection)) {
+        throw accountProblem(
+          "completion-reflection-required",
+          "Reflection required",
+          409,
+          "Answer all three reflection prompts before recording completion."
+        );
+      }
+
+      const updated = await this.#models.Progress.findOneAndUpdate(
+        {
+          _id: currentProgress._id,
+          userId,
+          dayNumber,
+          status: "in_progress",
+          selectedMode: request.mode,
+          version: currentProgress.version
+        },
+        {
+          $set: {
+            status: terminalStatus,
+            completedAt: now
+          },
+          $addToSet: {
+            operationKeys: request.idempotencyKey
+          },
+          $inc: {
+            version: 1
+          }
+        },
+        { session: databaseSession, returnDocument: "after", runValidators: true }
       );
-    }
+
+      if (updated === null) {
+        throw accountProblem(
+          "progress-conflict",
+          "Progress conflict",
+          409,
+          "The mission changed in another request. Reload Today before completing it."
+        );
+      }
+    });
 
     return this.#progressSnapshot(userId, dayNumber);
   }
@@ -863,40 +1244,67 @@ export class AccountService {
     dayNumber: number,
     reflection: ProgressReflectionRequest
   ): Promise<ProgressDayResponse> {
-    const progress = await this.#models.Progress.findOne({ userId, dayNumber });
-    if (progress === null || progress.status !== "in_progress") {
-      throw accountProblem(
-        "progress-conflict",
-        "Progress conflict",
-        409,
-        "Start this mission before saving a reflection."
+    await withActiveAccountWrite(this.#models, userId, sessionExpired, async (databaseSession) => {
+      const progress = await this.#models.Progress.findOne({ userId, dayNumber }).session(
+        databaseSession
       );
-    }
-
-    const existing = await this.#models.Reflection.findOne({ userId, dayNumber });
-    if (existing?.operationKeys.includes(reflection.idempotencyKey) === true) {
-      return this.#progressSnapshot(userId, dayNumber);
-    }
-
-    await this.#models.Reflection.findOneAndUpdate(
-      { userId, dayNumber },
-      {
-        $set: {
-          confused: reflection.confused,
-          mentalModelChanged: reflection.mentalModelChanged,
-          retrieveLater: reflection.retrieveLater
-        },
-        $addToSet: {
-          operationKeys: reflection.idempotencyKey
-        }
-      },
-      {
-        upsert: true,
-        returnDocument: "after",
-        runValidators: true,
-        setDefaultsOnInsert: true
+      if (progress === null || progress.status !== "in_progress") {
+        throw accountProblem(
+          "progress-conflict",
+          "Progress conflict",
+          409,
+          "Start this mission before saving a reflection."
+        );
       }
-    );
+
+      const existing = await this.#models.Reflection.findOne({ userId, dayNumber }).session(
+        databaseSession
+      );
+      if (existing?.operationKeys.includes(reflection.idempotencyKey) === true) {
+        return;
+      }
+
+      const claimed = await this.#models.Progress.updateOne(
+        {
+          _id: progress._id,
+          userId,
+          dayNumber,
+          status: "in_progress",
+          version: progress.version
+        },
+        { $inc: { version: 1 } },
+        { session: databaseSession }
+      );
+      if (claimed.matchedCount !== 1) {
+        throw accountProblem(
+          "progress-conflict",
+          "Progress conflict",
+          409,
+          "The mission changed before the reflection could be saved."
+        );
+      }
+
+      await this.#models.Reflection.findOneAndUpdate(
+        { userId, dayNumber },
+        {
+          $set: {
+            confused: reflection.confused,
+            mentalModelChanged: reflection.mentalModelChanged,
+            retrieveLater: reflection.retrieveLater
+          },
+          $addToSet: {
+            operationKeys: reflection.idempotencyKey
+          }
+        },
+        {
+          session: databaseSession,
+          upsert: true,
+          returnDocument: "after",
+          runValidators: true,
+          setDefaultsOnInsert: true
+        }
+      );
+    });
 
     return this.#progressSnapshot(userId, dayNumber);
   }
@@ -913,21 +1321,30 @@ export class AccountService {
 
     const user = await this.#models.User.findOne({ _id: identity.userId }).select("+passwordHash");
     if (user === null || !(await verifyPassword(user.passwordHash, password))) {
-      throw accountProblem(
-        "account-deletion-failed",
-        "Account deletion failed",
-        401,
-        "The account was not deleted. Check the current password and confirmation."
-      );
+      throw accountDeletionCredentialsRejected();
     }
 
     const databaseSession = await this.#models.User.db.startSession();
+    const credentialsRejected = accountDeletionCredentialsRejected();
     try {
       await databaseSession.withTransaction(async () => {
+        const deletionFence = await this.#models.User.updateOne(
+          { _id: user._id, passwordHash: user.passwordHash },
+          { $inc: { writeFence: 1 } },
+          { session: databaseSession }
+        );
+        if (deletionFence.matchedCount !== 1) {
+          throw credentialsRejected;
+        }
+
         // The MongoDB Node driver does not support parallel operations on one
         // transaction session. Keep the deletion registry explicit and serial.
         await this.#models.Progress.deleteMany({ userId: user._id }, { session: databaseSession });
         await this.#models.Reflection.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await this.#models.UserActivity.deleteMany(
           { userId: user._id },
           { session: databaseSession }
         );
@@ -968,6 +1385,16 @@ export class AccountService {
           { session: databaseSession }
         );
         await this.#models.Session.deleteMany({ userId: user._id }, { session: databaseSession });
+        await this.#models.Invitation.deleteMany(
+          {
+            $or: [{ consumedByUserId: user._id }, { email: user.email }]
+          },
+          { session: databaseSession }
+        );
+        await this.#models.PasswordReset.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
         const deleted = await this.#models.User.deleteOne(
           { _id: user._id },
           { session: databaseSession }
@@ -975,8 +1402,17 @@ export class AccountService {
         if (deleted.deletedCount !== 1) {
           throw new Error("Account ownership changed during deletion.");
         }
+        await this.#models.PilotAggregate.updateOne(
+          {
+            date: this.#now().toISOString().slice(0, 10),
+            event: "account_deletion_succeeded"
+          },
+          { $inc: { count: 1 } },
+          { session: databaseSession, upsert: true, setDefaultsOnInsert: true }
+        );
       });
-    } catch {
+    } catch (error: unknown) {
+      if (error === credentialsRejected) throw error;
       throw accountProblem(
         "account-deletion-failed",
         "Account deletion failed",

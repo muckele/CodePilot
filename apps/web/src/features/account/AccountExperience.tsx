@@ -18,6 +18,7 @@ import {
   loginAccount,
   logoutAccount,
   registerAccount,
+  resetPassword,
   saveOnboarding,
   saveProgressReflection,
   updateProgressStatus
@@ -199,12 +200,22 @@ function AuthPage({
   onAuthenticated: (user: AccountUser, csrfToken: string, destination: string) => void;
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const isRegister = mode === "register";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
+  const [invitationToken] = useState(
+    () => new URLSearchParams(location.hash.slice(1)).get("invite") ?? ""
+  );
   const [notice, setNotice] = useState<MutationNotice>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (isRegister && invitationToken !== "") {
+      void navigate("/register", { replace: true });
+    }
+  }, [invitationToken, isRegister, navigate]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -230,7 +241,14 @@ function AuthPage({
     setSubmitting(true);
     try {
       const result = isRegister
-        ? await registerAccount({ email, password }, csrfToken)
+        ? await registerAccount(
+            {
+              email,
+              password,
+              ...(invitationToken === "" ? {} : { invitationToken })
+            },
+            csrfToken
+          )
         : await loginAccount({ email, password }, csrfToken);
       const destination = result.user.onboardingComplete
         ? isRegister
@@ -280,6 +298,11 @@ function AuthPage({
             <p>Your CodeLift account data was deleted.</p>
           </div>
         ) : null}
+        {!isRegister && new URLSearchParams(location.search).get("reset") === "1" ? (
+          <div className="form-notice form-notice--success" role="status">
+            <p>Password reset complete. Sign in again with the new password.</p>
+          </div>
+        ) : null}
         {csrfToken === null ? (
           <p className="form-preparing" role="status">
             Preparing a protected form…
@@ -319,6 +342,19 @@ function AuthPage({
           </Field>
 
           {isRegister ? (
+            invitationToken === "" ? (
+              <p className="form-notice">
+                Private-pilot registration requires the one-time link from the invitation operator.
+                Local development may use open registration without a link.
+              </p>
+            ) : (
+              <p className="form-notice form-notice--success" role="status">
+                This one-time invitation link is ready for the email address it was issued to.
+              </p>
+            )
+          ) : null}
+
+          {isRegister ? (
             <Field id="register-password-confirmation" label="Confirm password">
               <input
                 id="register-password-confirmation"
@@ -354,8 +390,105 @@ function AuthPage({
             {isRegister ? "Already have an account? Sign in" : "Create an account"}
           </Link>
         </p>
+        <p className="account-switch policy-links">
+          <Link to="/privacy">Privacy</Link> · <Link to="/terms">Terms</Link> ·{" "}
+          <Link to="/support">Support</Link>
+        </p>
+        {!isRegister ? (
+          <p className="account-switch">
+            Recovery links are issued by the pilot operator. <Link to="/support">Get support</Link>
+          </p>
+        ) : null}
       </div>
       <WorkshopPromise />
+    </section>
+  );
+}
+
+function ResetPasswordPage({
+  csrfToken,
+  onReset
+}: {
+  csrfToken: string | null;
+  onReset: () => void;
+}) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [token] = useState(() => new URLSearchParams(location.hash.slice(1)).get("token") ?? "");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [notice, setNotice] = useState<MutationNotice>(null);
+  const [working, setWorking] = useState(false);
+
+  useEffect(() => {
+    if (token !== "") {
+      void navigate("/reset-password", { replace: true });
+    }
+  }, [navigate, token]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (csrfToken === null || token === "") {
+      setNotice({
+        kind: "error",
+        message: "This recovery link is incomplete or protection is still loading.",
+        requestId: null
+      });
+      return;
+    }
+    if (password !== confirmation) {
+      setNotice({ kind: "error", message: "Password confirmation must match.", requestId: null });
+      return;
+    }
+    setWorking(true);
+    setNotice(null);
+    try {
+      await resetPassword({ token, password }, csrfToken);
+      onReset();
+    } catch (error: unknown) {
+      setPassword("");
+      setConfirmation("");
+      setNotice(asNotice(error));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <section className="account-panel">
+      <PageIntro eyebrow="One-time recovery" title="Choose a new password">
+        A successful reset ends every existing session. Sign in again afterward on every device.
+      </PageIntro>
+      <Notice notice={notice} />
+      <form className="account-form" onSubmit={submit}>
+        <Field id="reset-password" label="New password" help="Use at least 12 characters.">
+          <input
+            id="reset-password"
+            type="password"
+            autoComplete="new-password"
+            required
+            minLength={12}
+            maxLength={128}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </Field>
+        <Field id="reset-password-confirmation" label="Confirm new password">
+          <input
+            id="reset-password-confirmation"
+            type="password"
+            autoComplete="new-password"
+            required
+            minLength={12}
+            maxLength={128}
+            value={confirmation}
+            onChange={(event) => setConfirmation(event.target.value)}
+          />
+        </Field>
+        <button className="button button--primary" type="submit" disabled={working || token === ""}>
+          {working ? "Resetting password…" : "Reset password"}
+        </button>
+      </form>
     </section>
   );
 }
@@ -1598,6 +1731,16 @@ function AccountPage({
         </button>
       </div>
       <div className="danger-zone">
+        <h2>Export account data</h2>
+        <p>
+          Download a versioned JSON copy of account-owned source and derived records. Authentication
+          secrets and other accounts are excluded.
+        </p>
+        <a className="button button--secondary" href="/api/v1/me/export" download>
+          Export my data
+        </a>
+      </div>
+      <div className="danger-zone">
         <h2>Delete account</h2>
         <p>Permanently remove product data owned by this account.</p>
         <Link className="button button--danger" to="/app/account/delete">
@@ -1914,6 +2057,20 @@ export function AccountAuthRoute({ mode }: { mode: "register" | "login" }) {
       mode={mode}
       csrfToken={context.csrfToken}
       onAuthenticated={context.authenticate}
+    />
+  );
+}
+
+export function AccountPasswordResetRoute() {
+  const context = useAccountOutlet();
+  const navigate = useNavigate();
+  return (
+    <ResetPasswordPage
+      csrfToken={context.csrfToken}
+      onReset={() => {
+        context.clearSession();
+        navigate("/login?reset=1", { replace: true });
+      }}
     />
   );
 }
