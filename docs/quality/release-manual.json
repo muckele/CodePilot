@@ -1,7 +1,7 @@
 {
   "evidenceVersion": 2,
-  "observedAt": "2026-09-02T22:06:11Z",
-  "sourceDigest": "2b8e44ff99db4bcff847fc84a28d5bd60d9ae674c8bd9f1c42f076c1c26a03bd",
+  "observedAt": "2026-09-08T18:41:40Z",
+  "sourceDigest": "ebf96dd57e95034d362a8f1e5c2d953bafcd0056f4c8b9deb4c15ebd1257e54a",
   "reviewProfile": "manual-in-app-browser-plus-real-playwright-supplemental",
   "reviewIdentity": "synthetic example.test accounts only",
   "responsiveWide": true,
@@ -91,7 +91,7 @@
     "playwrightJourneys": {
       "passed": 12,
       "failed": 0,
-      "durationSeconds": 35.5,
+      "durationSeconds": 36.7,
       "durationScope": "source-bound full E2E run including the mobile-WebKit gate",
       "browser": "chromium 11 passed; mobile-webkit 1 passed",
       "consoleErrors": 0,
