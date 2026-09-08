@@ -35,6 +35,7 @@ export function digestFile(path) {
 
 export async function encryptBackup({
   root,
+  recipientRoot = root,
   sourceSha,
   snapshot,
   input,
@@ -60,7 +61,7 @@ export async function encryptBackup({
       "-stream",
       "-outform",
       "DER",
-      join(root, "ops", "backup-recipient.pem")
+      join(recipientRoot, "ops", "backup-recipient.pem")
     ],
     { stdio: ["pipe", "pipe", "ignore"] }
   );

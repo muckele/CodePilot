@@ -172,6 +172,10 @@ before/after comparison proves isolation. Pre-fix archives without a snapshot
 manifest are retained unchanged but fail closed in this verifier; create a new
 verified backup instead of inferring a historical manifest from current data.
 Restore uses the same bounded socket-wait initializer as normal deployment.
+The isolated drill starts with TTL deletion disabled so records that have
+expired since backup cannot disappear before historical fidelity is checked.
+TTL index definitions are still restored and inspected. This setting never
+changes the candidate Mongo instance, where normal TTL deletion remains active.
 
 On success it removes only the restore container/volume/network and retains no
 plaintext archive. Teardown steps are independent: failure removing staging
@@ -196,6 +200,7 @@ node infra/selfhost/cli.mjs persistence
 node --test infra/selfhost/state.test.mjs infra/selfhost/backup.test.mjs infra/selfhost/operations.test.mjs infra/selfhost/compose.test.mjs
 node --test --test-concurrency=1 infra/selfhost/nginx.test.mjs infra/selfhost/mongo.test.mjs infra/selfhost/loopback.test.mjs infra/selfhost/stack.test.mjs
 node --test --test-concurrency=1 infra/selfhost/mongo-bootstrap.test.mjs infra/selfhost/restore.test.mjs
+node --test infra/selfhost/restore-safety.test.mjs
 ```
 
 The runtime tests require initialized operator state and the built/running
@@ -203,6 +208,14 @@ self-host images. Persistence restarts Mongo, restarts API/web, and performs
 Compose down/up while comparing the same persisted synthetic data. It does not
 delete the candidate volume. Never use `docker compose down -v` here. Docker
 Desktop restart remains deferred while unrelated BigCapital containers run.
+
+Restore tests put ciphertext, retention and evidence in a new private temporary
+artifact root per invocation; they do not run retention against operator
+backups. Cleanup derives names from that invocation's unique ID and checks
+matching Docker ownership labels, never shared retained-drill evidence.
+The safety regression uses a synthetic operator root with eight pre-existing
+encrypted artifacts and stale diagnostic resources. The TTL regression waits
+through a full interval and therefore takes over a minute.
 
 After a source commit, run the authoritative release-quality aggregate once
 for that exact clean revision and obtain exact-SHA CI. Prior source evidence

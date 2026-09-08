@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { fileURLToPath } from "node:url";
 import { encryptBackup, pruneBackups, readBackupSnapshot, verifyBackup } from "./backup.mjs";
 import {
   checkStack,
@@ -44,8 +46,8 @@ function exitStatus(child) {
   });
 }
 
-async function backup() {
-  diskGate("backup");
+export async function backup({ artifactRoot = stateRoot } = {}) {
+  diskGate("backup", false, artifactRoot);
   const lock = join(stateRoot, "ops", "backup.lock");
   mkdirSync(lock, { mode: 0o700 });
   let locked = false;
@@ -74,26 +76,31 @@ async function backup() {
     const done = exitStatus(dump);
     const sourceSha = command("git", ["rev-parse", "HEAD"]);
     const metadata = await encryptBackup({
-      root: stateRoot,
+      root: artifactRoot,
+      recipientRoot: stateRoot,
       sourceSha,
       snapshot,
       input: dump.stdout,
       sourceCompletion: done
     });
-    verifyBackup(stateRoot, metadata.filename);
-    pruneBackups(stateRoot);
-    return saveEvidence("backup", {
-      ...metadata,
-      sourceDirty: command("git", ["status", "--porcelain"]) !== "",
-      durationMs: Date.now() - started,
-      retained: 8,
-      offDevice: false
-    });
+    verifyBackup(artifactRoot, metadata.filename);
+    pruneBackups(artifactRoot);
+    return saveEvidence(
+      "backup",
+      {
+        ...metadata,
+        sourceDirty: command("git", ["status", "--porcelain"]) !== "",
+        durationMs: Date.now() - started,
+        retained: 8,
+        offDevice: false
+      },
+      artifactRoot
+    );
   } finally {
     if (dump && dump.exitCode === null) dump.kill("SIGTERM");
     if (locked) maintenance("unlock");
     rmSync(lock, { recursive: true, force: true });
-    diskGate("backup-end");
+    diskGate("backup-end", false, artifactRoot);
   }
 }
 
@@ -103,13 +110,16 @@ async function up() {
   compose("up", "-d", "--wait", "--wait-timeout", "180", "api", "web");
 }
 
-async function restore(filename) {
-  diskGate("restore-start", true);
-  const snapshot = readBackupSnapshot(stateRoot, filename);
+export async function restore(
+  filename,
+  { artifactRoot = stateRoot, invocationId = randomUUID() } = {}
+) {
+  assert.match(invocationId, /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
+  diskGate("restore-start", true, artifactRoot);
+  const snapshot = readBackupSnapshot(artifactRoot, filename);
   const candidateBefore = fixture("fingerprint").fingerprint;
   const started = Date.now();
-  const suffix = `${Date.now()}-${process.pid}`;
-  const network = `codelift-selfhost-restore-${suffix}`;
+  const network = `codelift-selfhost-restore-${invocationId}`;
   const container = `${network}-mongo`;
   const volume = `${network}-data`;
   const scripts = join(repositoryRoot, "infra", "selfhost");
@@ -126,16 +136,37 @@ async function restore(filename) {
   let verification = {};
   let verificationError;
   try {
-    saveEvidence("restore-resources", { network, container, volume, hostPorts: [] });
-    docker("network", "create", "--internal", network);
+    saveEvidence(
+      "restore-resources",
+      { invocationId, network, container, volume, hostPorts: [] },
+      artifactRoot
+    );
+    docker(
+      "network",
+      "create",
+      "--internal",
+      "--label",
+      `com.codelift.restore-invocation=${invocationId}`,
+      network
+    );
     createdNetwork = true;
-    docker("volume", "create", "--label", "com.codelift.purpose=isolated-restore", volume);
+    docker(
+      "volume",
+      "create",
+      "--label",
+      "com.codelift.purpose=isolated-restore",
+      "--label",
+      `com.codelift.restore-invocation=${invocationId}`,
+      volume
+    );
     createdVolume = true;
     docker(
       "run",
       "-d",
       "--name",
       container,
+      "--label",
+      `com.codelift.restore-invocation=${invocationId}`,
       "--network",
       network,
       "--network-alias",
@@ -169,6 +200,10 @@ async function restore(filename) {
       mongoImage,
       "/opt/codelift/selfhost/mongo-entrypoint.sh",
       "mongod",
+      // Historical records must survive until fidelity is checked. Their TTL
+      // indexes are restored and inspected; only this disposable drill opts out.
+      "--setParameter",
+      "ttlMonitorEnabled=false",
       "--replSet",
       "rs0",
       "--bind_ip_all",
@@ -228,7 +263,7 @@ async function restore(filename) {
         "-inform",
         "DER",
         "-in",
-        join(stateRoot, "backups", filename),
+        join(artifactRoot, "backups", filename),
         "-recip",
         join(stateRoot, "ops", "backup-recipient.pem"),
         "-inkey",
@@ -261,7 +296,7 @@ async function restore(filename) {
       "127.0.0.1",
       "/opt/codelift/selfhost/mongo-restore-config.js"
     );
-    diskGate("mongorestore", true);
+    diskGate("mongorestore", true, artifactRoot);
     docker(
       "exec",
       container,
@@ -384,7 +419,7 @@ async function restore(filename) {
   const retainedResources = Object.entries(resourceState)
     .filter(([, state]) => state !== "absent")
     .map(([kind]) => resourceNames[kind]);
-  attempt("disk", () => diskGate("restore-end"));
+  attempt("disk", () => diskGate("restore-end", false, artifactRoot));
   const plaintextStaging = !stagingStarted
     ? "not created"
     : plaintextRemoved || resourceState.container === "absent"
@@ -393,21 +428,26 @@ async function restore(filename) {
         ? "unverified; isolated container stopped"
         : "unverified; inspect retained container";
   const passed = success && errors.length === 0 && retainedResources.length === 0;
-  const evidence = saveEvidence("restore", {
-    status: passed ? "pass" : "failed",
-    filename,
-    durationMs: Date.now() - started,
-    verificationPassed: success,
-    verificationError,
-    ...verification,
-    plaintextStaging,
-    cleanup: {
-      status: retainedResources.length === 0 ? "complete" : "incomplete",
-      errors,
-      retainedResources,
-      resourceState
-    }
-  });
+  const evidence = saveEvidence(
+    "restore",
+    {
+      status: passed ? "pass" : "failed",
+      invocationId,
+      filename,
+      durationMs: Date.now() - started,
+      verificationPassed: success,
+      verificationError,
+      ...verification,
+      plaintextStaging,
+      cleanup: {
+        status: retainedResources.length === 0 ? "complete" : "incomplete",
+        errors,
+        retainedResources,
+        resourceState
+      }
+    },
+    artifactRoot
+  );
   if (!passed)
     throw new Error("Restore did not complete cleanly; inspect the redacted restore evidence.");
   return evidence;
@@ -485,10 +525,12 @@ async function main() {
   );
 }
 
-try {
-  const result = await main();
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-} catch (error) {
-  process.stderr.write(`${error.message}\n`);
-  process.exitCode = 1;
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  try {
+    const result = await main();
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 1;
+  }
 }

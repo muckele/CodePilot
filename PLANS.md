@@ -333,3 +333,14 @@ records inspected cleanup/retained-resource state only afterward. Focused
 regressions exercise the real pinned Mongo/bootstrap, delayed startup, a later
 synthetic candidate write, and injected Docker cleanup failures. The controller
 still owns final clean-revision aggregate/CI; this adds no product/public scope.
+
+### M16.3B final whole-branch correction
+
+The final review wave isolates regression-test backup/evidence output from
+operator retention and binds test cleanup to an invocation ID plus Docker
+ownership labels. A synthetic full-retention/stale-diagnostics regression
+proves pre-existing artifacts survive successful and early-failing tests.
+Temporary restore Mongo alone disables TTL deletion until fidelity checks,
+while preserved TTL indexes and an expired archived session are verified
+across a real TTL interval; candidate TTL remains enabled. No deferred Minor
+observation, public boundary or product behavior is changed in this wave.

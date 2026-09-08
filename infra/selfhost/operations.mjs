@@ -20,11 +20,11 @@ export function checkDiskBudget(availableBytes, intensive) {
     throw new Error("SELFHOST_DISK_PRESSURE_BLOCKED");
 }
 
-export function diskGate(operation, intensive = false) {
+export function diskGate(operation, intensive = false, evidenceRoot = stateRoot) {
   const space = statfsSync(repositoryRoot);
   const availableBytes = space.bavail * space.bsize;
   appendFileSync(
-    join(stateRoot, "evidence", "disk.jsonl"),
+    join(evidenceRoot, "evidence", "disk.jsonl"),
     `${JSON.stringify({ time: new Date().toISOString(), operation, availableBytes })}\n`,
     { mode: 0o600 }
   );
@@ -49,11 +49,15 @@ export function command(binary, args, options = {}) {
 export const docker = (...args) => command("docker", args);
 export const compose = (...args) => docker(...composeArgs, ...args);
 
-export function saveEvidence(name, data) {
+export function saveEvidence(name, data, evidenceRoot = stateRoot) {
   if (!/^[a-z-]+$/.test(name)) throw new Error("Invalid evidence name.");
-  writeFileSync(join(stateRoot, "evidence", `${name}.json`), `${JSON.stringify(data, null, 2)}\n`, {
-    mode: 0o600
-  });
+  writeFileSync(
+    join(evidenceRoot, "evidence", `${name}.json`),
+    `${JSON.stringify(data, null, 2)}\n`,
+    {
+      mode: 0o600
+    }
+  );
   return data;
 }
 
