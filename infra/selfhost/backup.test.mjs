@@ -16,9 +16,20 @@ test("backup streaming retains only recipient-encrypted bytes with a validated h
     const first = await module.encryptBackup({
       root,
       sourceSha: "a".repeat(40),
+      snapshot: { algorithm: "sha256-json-v1", fingerprint: "e".repeat(64), collections: 2 },
       input: Readable.from(["synthetic private fixture"]),
       date: new Date("2026-09-01T00:00:00Z")
     });
+    assert.deepEqual(first.snapshot, {
+      algorithm: "sha256-json-v1",
+      fingerprint: "e".repeat(64),
+      collections: 2
+    });
+    assert.deepEqual(module.readBackupSnapshot(root, first.filename), first.snapshot);
+    const metadataPath = join(root, "backups", `${first.filename}.json`);
+    writeFileSync(metadataPath, JSON.stringify({ ...first, snapshot: { fingerprint: "invalid" } }));
+    assert.throws(() => module.readBackupSnapshot(root, first.filename), /snapshot/i);
+    writeFileSync(metadataPath, JSON.stringify(first));
     assert.ok(module.verifyBackup(root, first.filename));
     const encrypted = readFileSync(join(root, "backups", first.filename));
     assert.ok(!encrypted.includes(Buffer.from("synthetic private fixture")));

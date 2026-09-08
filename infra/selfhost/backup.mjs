@@ -36,6 +36,7 @@ export function digestFile(path) {
 export async function encryptBackup({
   root,
   sourceSha,
+  snapshot,
   input,
   date = new Date(),
   sourceCompletion = Promise.resolve(0)
@@ -83,6 +84,7 @@ export async function encryptBackup({
       filename,
       createdAt: date.toISOString(),
       sourceSha,
+      snapshot,
       encryption: "CMS AES-256-GCM / RSA-3072 recipient",
       compression: "mongodump gzip",
       consistency: "primary fsync write lock; database-only; no credential collections",
@@ -119,6 +121,31 @@ export function verifyBackup(root, filename) {
   if (readFileSync(`${path}.sha256`, "utf8") !== `${actual}  ${filename}\n`)
     throw new Error("Backup integrity verification failed.");
   return actual;
+}
+
+export function readBackupSnapshot(root, filename) {
+  const sha256 = verifyBackup(root, filename);
+  try {
+    const path = join(root, "backups", `${filename}.json`);
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096) throw new Error();
+    const metadata = JSON.parse(readFileSync(path, "utf8"));
+    const snapshot = metadata.snapshot;
+    if (
+      metadata.filename !== filename ||
+      metadata.sha256 !== sha256 ||
+      snapshot?.algorithm !== "sha256-json-v1" ||
+      !/^[a-f0-9]{64}$/.test(snapshot.fingerprint) ||
+      !Number.isInteger(snapshot.collections) ||
+      snapshot.collections < 0
+    )
+      throw new Error();
+    return snapshot;
+  } catch {
+    throw new Error(
+      "Backup snapshot manifest is missing or invalid; create a new verified backup."
+    );
+  }
 }
 
 export function pruneBackups(root, keep = 8) {

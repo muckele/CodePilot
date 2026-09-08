@@ -1,6 +1,6 @@
 // One-off operational verification, mounted only into a helper. Never a route.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { readSnapshot } from "./snapshot.mjs";
 
 const { loadApiConfig } = await import("/app/apps/api/dist/config.js");
 const { initializePersistence, closePersistence } =
@@ -124,8 +124,6 @@ try {
       2
     );
   }
-  const hash = createHash("sha256");
-  const persisted = createHash("sha256");
   // API startup intentionally reseeds globals and updates their timestamps.
   // Persistence compares user state; restore still compares the full snapshot.
   const globalCollections = new Set(
@@ -137,21 +135,10 @@ try {
       models.EvalDataset
     ].map((model) => model.collection.name)
   );
-  const collections = (await connection.db.listCollections({}, { nameOnly: true }).toArray())
-    .map((entry) => entry.name)
-    .filter((name) => !name.startsWith("system."))
-    .sort();
-  for (const name of collections) {
-    hash.update(name);
-    if (!globalCollections.has(name)) persisted.update(name);
-    for await (const document of connection.db.collection(name).find().sort({ _id: 1 })) {
-      const serialized = JSON.stringify(document);
-      hash.update(serialized);
-      if (!globalCollections.has(name)) persisted.update(serialized);
-    }
-  }
+  const snapshot = await readSnapshot(connection.db);
+  const persisted = await readSnapshot(connection.db, globalCollections);
   process.stdout.write(
-    `${JSON.stringify({ transaction: action !== "fingerprint", committedDocumentWrites, tenantIsolation: action !== "fingerprint", accountExport: action !== "fingerprint", indexes: action !== "fingerprint", collections: collections.length, fingerprint: hash.digest("hex"), persistenceFingerprint: persisted.digest("hex") })}\n`
+    `${JSON.stringify({ transaction: action !== "fingerprint", committedDocumentWrites, tenantIsolation: action !== "fingerprint", accountExport: action !== "fingerprint", indexes: action !== "fingerprint", collections: snapshot.collections, fingerprint: snapshot.fingerprint, persistenceFingerprint: persisted.fingerprint })}\n`
   );
 } finally {
   await closePersistence(runtime);

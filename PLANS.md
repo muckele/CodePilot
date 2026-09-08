@@ -321,3 +321,15 @@ Desktop restart is deferred because unrelated BigCapital containers remain
 active. The candidate named volume and all unrelated resources are preserved.
 See [M16.3B](docs/milestones/16-3b-private-self-host.md) and the
 [operator runbook](docs/runbooks/self-host.md).
+
+### M16.3B review correction round 1
+
+Four focused operational corrections follow the initial local commit: root
+bootstrap reads credentials inside the database client (no password-bearing
+child arguments); backups capture a read-only fingerprint while writes are
+locked and restores compare with that historical manifest; isolated restore
+uses the shared bounded socket wait; teardown attempts independent steps and
+records inspected cleanup/retained-resource state only afterward. Focused
+regressions exercise the real pinned Mongo/bootstrap, delayed startup, a later
+synthetic candidate write, and injected Docker cleanup failures. The controller
+still owns final clean-revision aggregate/CI; this adds no product/public scope.

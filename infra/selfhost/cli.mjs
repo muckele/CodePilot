@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { encryptBackup, pruneBackups, verifyBackup } from "./backup.mjs";
+import { encryptBackup, pruneBackups, readBackupSnapshot, verifyBackup } from "./backup.mjs";
 import {
   checkStack,
   command,
@@ -54,6 +54,18 @@ async function backup() {
   try {
     maintenance("lock");
     locked = true;
+    const snapshot = JSON.parse(
+      compose(
+        "run",
+        "--rm",
+        "--no-deps",
+        "-v",
+        `${join(repositoryRoot, "infra/selfhost")}:/opt/codelift/selfhost:ro`,
+        "seed",
+        "node",
+        "/opt/codelift/selfhost/snapshot.mjs"
+      )
+    );
     dump = spawn("docker", [...composeArgs, "run", "--rm", "--no-deps", "-T", "backup"], {
       cwd: repositoryRoot,
       stdio: ["ignore", "pipe", "ignore"],
@@ -64,6 +76,7 @@ async function backup() {
     const metadata = await encryptBackup({
       root: stateRoot,
       sourceSha,
+      snapshot,
       input: dump.stdout,
       sourceCompletion: done
     });
@@ -92,7 +105,7 @@ async function up() {
 
 async function restore(filename) {
   diskGate("restore-start", true);
-  verifyBackup(stateRoot, filename);
+  const snapshot = readBackupSnapshot(stateRoot, filename);
   const candidateBefore = fixture("fingerprint").fingerprint;
   const started = Date.now();
   const suffix = `${Date.now()}-${process.pid}`;
@@ -109,7 +122,11 @@ async function restore(filename) {
   let createdContainer = false;
   let createdVolume = false;
   let createdNetwork = false;
+  let stagingStarted = false;
+  let verification = {};
+  let verificationError;
   try {
+    saveEvidence("restore-resources", { network, container, volume, hostPorts: [] });
     docker("network", "create", "--internal", network);
     createdNetwork = true;
     docker("volume", "create", "--label", "com.codelift.purpose=isolated-restore", volume);
@@ -146,10 +163,6 @@ async function restore(filename) {
       ...secretMount("mongo-admin-password"),
       ...secretMount("mongo-keyfile"),
       "-e",
-      "MONGO_INITDB_ROOT_USERNAME=codelift_admin",
-      "-e",
-      "MONGO_INITDB_ROOT_PASSWORD_FILE=/run/secrets/mongo-admin-password",
-      "-e",
       "MONGOSH_DISABLE_TELEMETRY=1",
       "--entrypoint",
       "bash",
@@ -168,26 +181,7 @@ async function restore(filename) {
       "128"
     );
     createdContainer = true;
-    saveEvidence("restore-resources", { network, container, volume, hostPorts: [] });
-    // The official entrypoint briefly starts a localhost-only bootstrap mongod.
-    // Retry the helper until the private authenticated process accepts sockets.
-    for (let attempt = 0; attempt < 60; attempt++) {
-      try {
-        docker(
-          "exec",
-          container,
-          "mongosh",
-          "--quiet",
-          "--host",
-          "127.0.0.1",
-          "/opt/codelift/selfhost/mongo-health.js"
-        );
-        break;
-      } catch {
-        if (attempt >= 3) break;
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    }
+    // Use the same bounded remote-socket wait as normal authenticated startup.
     docker(
       "run",
       "--rm",
@@ -203,11 +197,17 @@ async function restore(filename) {
       "--cpus",
       "0.5",
       ...mount(scripts, "/opt/codelift/selfhost"),
+      ...mount(
+        join(repositoryRoot, "infra/mongo/init-replica.sh"),
+        "/opt/codelift/init-replica.sh"
+      ),
       ...secretMount("mongo-admin-password"),
       ...secretMount("mongo-app-password"),
       ...secretMount("mongo-backup-password"),
       "-e",
       "MONGO_HOST=mongodb",
+      "-e",
+      "MONGO_AUTH_ENABLED=true",
       "-e",
       "MONGO_REPLICA_SET=rs0",
       "-e",
@@ -215,12 +215,9 @@ async function restore(filename) {
       "-e",
       "MONGOSH_DISABLE_TELEMETRY=1",
       "--entrypoint",
-      "mongosh",
+      "bash",
       mongoImage,
-      "--quiet",
-      "--host",
-      "mongodb",
-      "/opt/codelift/selfhost/mongo-init.js"
+      "/opt/codelift/init-replica.sh"
     );
     const encryption = spawn(
       "openssl",
@@ -239,6 +236,7 @@ async function restore(filename) {
       ],
       { stdio: ["ignore", "pipe", "ignore"], timeout: 120_000 }
     );
+    stagingStarted = true;
     const staging = spawn(
       "docker",
       ["exec", "-i", container, "sh", "-c", "umask 077; cat > /tmp/restore.archive.gz"],
@@ -330,34 +328,89 @@ async function restore(filename) {
     assert.equal(candidateAfter, candidateBefore, "restore left candidate data untouched");
     assert.equal(
       restored.fingerprint,
-      candidateBefore,
-      "restored application data matches the source snapshot"
+      snapshot.fingerprint,
+      "restored application data matches the recorded backup-time snapshot"
     );
+    assert.equal(restored.collections, snapshot.collections);
     const inspect = JSON.parse(docker("inspect", container))[0];
     assert.equal(Object.keys(inspect.HostConfig.PortBindings ?? {}).length, 0);
     assert.ok(inspect.Mounts.some((entry) => entry.Name === volume));
     success = true;
-    return saveEvidence("restore", {
-      status: "pass",
-      durationMs: Date.now() - started,
-      filename,
+    verification = {
       ...rawIndexes,
       ...restored,
       candidateUntouched: true,
-      hostPorts: [],
-      plaintextStaging: "container tmpfs only; removed",
-      cleanup: "isolated container, volume and network removed"
-    });
-  } finally {
-    if (createdContainer) {
-      docker("exec", container, "rm", "-f", "/tmp/restore.archive.gz", "/tmp/restore-config.yml");
-      if (success) docker("rm", "-f", container);
-      else docker("stop", container);
-    }
-    if (success && createdVolume) docker("volume", "rm", volume);
-    if (success && createdNetwork) docker("network", "rm", network);
-    diskGate("restore-end");
+      hostPorts: []
+    };
+  } catch {
+    verificationError = "Restore operation or verification failed; secret details suppressed.";
   }
+  // Teardown steps must not short-circuit each other. Inspect actual final
+  // state before recording any cleanup claim, even when a command failed.
+  const errors = [];
+  const attempt = (step, action) => {
+    try {
+      action();
+      return true;
+    } catch (error) {
+      errors.push({ step, message: error.message });
+      return false;
+    }
+  };
+  let plaintextRemoved = false;
+  let stopped = false;
+  if (createdContainer) {
+    plaintextRemoved = attempt("plaintext", () =>
+      docker("exec", container, "rm", "-f", "/tmp/restore.archive.gz", "/tmp/restore-config.yml")
+    );
+    stopped = attempt("stop", () => docker("stop", container));
+    if (success) attempt("container", () => docker("rm", "-f", container));
+  }
+  if (success && createdVolume) attempt("volume", () => docker("volume", "rm", volume));
+  if (success && createdNetwork) attempt("network", () => docker("network", "rm", network));
+  const resourceNames = { container, volume, network };
+  const queries = {
+    container: ["ps", "-a", "--filter", `name=^/${container}$`, "--format", "{{.ID}}"],
+    volume: ["volume", "ls", "--filter", `name=^${volume}$`, "--format", "{{.Name}}"],
+    network: ["network", "ls", "--filter", `name=^${network}$`, "--format", "{{.Name}}"]
+  };
+  const resourceState = {};
+  for (const [kind, args] of Object.entries(queries)) {
+    resourceState[kind] = "unknown";
+    attempt(`inspect-${kind}`, () => {
+      resourceState[kind] = docker(...args) === "" ? "absent" : "present";
+    });
+  }
+  const retainedResources = Object.entries(resourceState)
+    .filter(([, state]) => state !== "absent")
+    .map(([kind]) => resourceNames[kind]);
+  attempt("disk", () => diskGate("restore-end"));
+  const plaintextStaging = !stagingStarted
+    ? "not created"
+    : plaintextRemoved || resourceState.container === "absent"
+      ? "removed"
+      : stopped
+        ? "unverified; isolated container stopped"
+        : "unverified; inspect retained container";
+  const passed = success && errors.length === 0 && retainedResources.length === 0;
+  const evidence = saveEvidence("restore", {
+    status: passed ? "pass" : "failed",
+    filename,
+    durationMs: Date.now() - started,
+    verificationPassed: success,
+    verificationError,
+    ...verification,
+    plaintextStaging,
+    cleanup: {
+      status: retainedResources.length === 0 ? "complete" : "incomplete",
+      errors,
+      retainedResources,
+      resourceState
+    }
+  });
+  if (!passed)
+    throw new Error("Restore did not complete cleanly; inspect the redacted restore evidence.");
+  return evidence;
 }
 
 async function main() {

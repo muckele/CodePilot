@@ -32,6 +32,12 @@ authentication is an acceptable private single-member boundary; it does not
 provide X.509 identity management, database transport TLS, high availability,
 or protection against a compromised host/Docker administrator.
 
+On an empty volume, a bounded localhost-only bootstrap creates the root user
+through a database-client script that reads the mounted password internally.
+The official entrypoint is never given a root password or its `_FILE` input:
+its interpolation helper can put that value in a short-lived subprocess's
+arguments. Existing volumes skip root creation and preserve their credentials.
+
 The exact operator root is:
 
 ```text
@@ -133,8 +139,10 @@ Mongo's `fsync` write lock for a bounded database-only `mongodump` (maximum
 120 seconds). Reads continue; writes briefly wait. The dump authenticates with
 the read-only account via a mounted configuration file, selects `rs0` and the
 primary, and streams gzip output directly into OpenSSL CMS AES-256-GCM recipient
-encryption. Only ciphertext, an exact SHA-256 sidecar, and date/revision/size
-metadata are retained. The decryption key is never supplied to the dump or
+encryption. Only ciphertext, an exact SHA-256 sidecar, and date/revision/size plus
+a content-free snapshot-fingerprint manifest are retained. The fingerprint is
+read under the same write lock, without application/index initialization.
+The decryption key is never supplied to the dump or
 encryption subprocess, and is stored separately from the ciphertext.
 
 Full-instance `mongodump --oplog` includes database users and role definitions.
@@ -158,11 +166,22 @@ Restore verifies the hash, starts an isolated authenticated Mongo replica with
 a distinct named volume and internal network, and publishes no host port. It
 decrypts only into container tmpfs, restores, verifies indexes before application
 startup can create them, checks both tenants through the actual account export
-service, and tests transactions. Candidate and restored data fingerprints must
-match and candidate data must remain unchanged. On success it removes only the
-restore container/volume/network and retains no plaintext archive. A failed
-drill stops its isolated container, removes plaintext staging, and retains its
-named volume for explicit investigation; it never restores over the candidate.
+service, and tests transactions. Restored data must match the manifest captured
+at backup time, even if the candidate has since changed; a separate candidate
+before/after comparison proves isolation. Pre-fix archives without a snapshot
+manifest are retained unchanged but fail closed in this verifier; create a new
+verified backup instead of inferring a historical manifest from current data.
+Restore uses the same bounded socket-wait initializer as normal deployment.
+
+On success it removes only the restore container/volume/network and retains no
+plaintext archive. Teardown steps are independent: failure removing staging
+does not skip stopping the container or the other cleanup attempts. Evidence
+is written only after actual resource state is inspected; any cleanup error
+fails the operation and records exact retained resource names and whether
+plaintext removal is verified. A verification-failed drill retains its stopped
+container/volume/network for diagnosis. Consult the actual evidence before
+cleanup or retry; never infer that an attempted removal succeeded. Restore
+never targets the candidate database.
 
 If a backup operator is terminated abruptly, inspect the candidate's write-lock
 state before resuming. `node infra/selfhost/cli.mjs unlock` is the explicit
@@ -176,6 +195,7 @@ and unlocking. Never run overlapping backups or maintenance writes.
 node infra/selfhost/cli.mjs persistence
 node --test infra/selfhost/state.test.mjs infra/selfhost/backup.test.mjs infra/selfhost/operations.test.mjs infra/selfhost/compose.test.mjs
 node --test --test-concurrency=1 infra/selfhost/nginx.test.mjs infra/selfhost/mongo.test.mjs infra/selfhost/loopback.test.mjs infra/selfhost/stack.test.mjs
+node --test --test-concurrency=1 infra/selfhost/mongo-bootstrap.test.mjs infra/selfhost/restore.test.mjs
 ```
 
 The runtime tests require initialized operator state and the built/running

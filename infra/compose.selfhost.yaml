@@ -45,8 +45,6 @@ services:
         "128"
       ]
     environment:
-      MONGO_INITDB_ROOT_USERNAME: codelift_admin
-      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo-admin-password
       MONGOSH_DISABLE_TELEMETRY: "1"
       HOME: /tmp
     secrets: [mongo-admin-password, mongo-keyfile]
