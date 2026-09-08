@@ -1,0 +1,226 @@
+# Private macOS checkpoint. Only web has a host binding; never use down -v.
+name: codelift-selfhost
+
+x-hardening: &hardening
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options: { max-size: "5m", max-file: "3" }
+
+x-api-environment: &api-environment
+  NODE_ENV: production
+  API_PORT: "4000"
+  WEB_ORIGIN: ${WEB_ORIGIN:?Set the exact HTTPS origin (local checkpoint uses https://codelift.localhost)}
+  TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:?Declare the measured proxy count (local checkpoint only = 1)}
+  PERSISTENCE_MODE: required
+  MONGO_URI_FILE: /run/secrets/mongo-uri
+  MONGO_DB_NAME: codelift
+  REGISTRATION_MODE: invite_only
+  AI_PROVIDER: mock
+  AI_EXTERNAL_ENABLED: "false"
+  AI_AGENT_ENABLED: "false"
+
+services:
+  mongodb:
+    <<: *hardening
+    image: mongo:8.0.26@sha256:3ce3de7f40e914034b03b7dec654005ab54f7dc8306937e44ec6760d9e9409a1
+    cpus: 1
+    mem_limit: 1536m
+    restart: unless-stopped
+    stop_grace_period: 60s
+    entrypoint: ["bash", "/opt/codelift/selfhost/mongo-entrypoint.sh"]
+    command:
+      [
+        "mongod",
+        "--replSet",
+        "rs0",
+        "--bind_ip_all",
+        "--auth",
+        "--keyFile",
+        "/tmp/mongo-keyfile",
+        "--wiredTigerCacheSizeGB",
+        "0.5",
+        "--oplogSize",
+        "128"
+      ]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: codelift_admin
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo-admin-password
+      MONGOSH_DISABLE_TELEMETRY: "1"
+      HOME: /tmp
+    secrets: [mongo-admin-password, mongo-keyfile]
+    volumes:
+      - mongo_data:/data/db
+      - ./selfhost:/opt/codelift/selfhost:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /data/configdb:size=16m,uid=999,gid=999,mode=0700
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--host",
+          "127.0.0.1",
+          "/opt/codelift/selfhost/mongo-health.js"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [backend]
+
+  mongo-init:
+    <<: *hardening
+    profiles: ["tools"]
+    image: mongo:8.0.26@sha256:3ce3de7f40e914034b03b7dec654005ab54f7dc8306937e44ec6760d9e9409a1
+    cpus: 0.5
+    mem_limit: 256m
+    restart: "no"
+    depends_on:
+      mongodb: { condition: service_started }
+    entrypoint: ["bash", "/opt/codelift/init-replica.sh"]
+    environment:
+      HOME: /tmp
+      MONGOSH_DISABLE_TELEMETRY: "1"
+      MONGO_AUTH_ENABLED: "true"
+      MONGO_HOST: mongodb
+      MONGO_PORT: "27017"
+      MONGO_REPLICA_SET: rs0
+      MONGO_REPLICA_MEMBER: mongodb:27017
+      MONGO_INIT_MAX_ATTEMPTS: "120"
+    secrets: [mongo-admin-password, mongo-app-password, mongo-backup-password]
+    volumes:
+      - ./mongo/init-replica.sh:/opt/codelift/init-replica.sh:ro
+      - ./selfhost:/opt/codelift/selfhost:ro
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    networks: [backend]
+
+  api:
+    <<: *hardening
+    image: codelift-selfhost-api:m16-3b
+    build: { context: .., dockerfile: apps/api/Dockerfile }
+    user: "${SELFHOST_UID:?Set operator UID}:${SELFHOST_GID:?Set operator GID}"
+    cpus: 1
+    mem_limit: 512m
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    cap_drop: [ALL]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    environment: *api-environment
+    secrets: [mongo-uri]
+    depends_on:
+      mongodb: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4000/ready').then(r=>{if(!r.ok)process.exit(1)})"
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    networks: [backend]
+
+  web:
+    <<: *hardening
+    image: codelift-selfhost-web:m16-3b
+    build: { context: .., dockerfile: apps/web/Dockerfile }
+    cpus: 0.25
+    mem_limit: 128m
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cap_drop: [ALL]
+    tmpfs:
+      [
+        "/tmp:size=16m,mode=1777",
+        "/var/cache/nginx:size=16m,uid=101,gid=101",
+        "/var/run:size=1m,uid=101,gid=101"
+      ]
+    volumes:
+      - ./selfhost/trusted-ingress.conf:/etc/nginx/codelift-trusted-ingress.conf:ro
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      api: { condition: service_healthy }
+    networks: [ingress, backend]
+
+  seed:
+    <<: *hardening
+    profiles: ["tools"]
+    image: codelift-selfhost-api:m16-3b
+    user: "${SELFHOST_UID:?Set operator UID}:${SELFHOST_GID:?Set operator GID}"
+    cpus: 1
+    mem_limit: 512m
+    restart: "no"
+    cap_drop: [ALL]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    environment: *api-environment
+    secrets: [mongo-uri]
+    command: ["node", "apps/api/dist/seed/cli.js", "seed"]
+    networks: [backend]
+
+  backup:
+    <<: *hardening
+    profiles: ["tools"]
+    image: mongo:8.0.26@sha256:3ce3de7f40e914034b03b7dec654005ab54f7dc8306937e44ec6760d9e9409a1
+    user: "${SELFHOST_UID:?Set operator UID}:${SELFHOST_GID:?Set operator GID}"
+    cpus: 0.5
+    mem_limit: 256m
+    restart: "no"
+    cap_drop: [ALL]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    secrets: [mongo-backup-config]
+    entrypoint: ["mongodump"]
+    # A database-only dump excludes authentication secrets. cli.mjs holds the
+    # primary's fsync write lock throughout; no oplog replay is needed.
+    command:
+      [
+        "--host",
+        "rs0/mongodb:27017",
+        "--username",
+        "codelift_backup",
+        "--authenticationDatabase",
+        "admin",
+        "--config",
+        "/run/secrets/mongo-backup-config",
+        "--db",
+        "codelift",
+        "--readPreference",
+        "primary",
+        "--archive",
+        "--gzip",
+        "--numParallelCollections",
+        "1",
+        "--quiet"
+      ]
+    networks: [backend]
+
+networks:
+  ingress:
+    ipam:
+      config:
+        - subnet: 172.26.0.0/16
+          gateway: 172.26.0.1
+  backend: { internal: true }
+volumes:
+  mongo_data:
+    name: codelift_selfhost_mongo_data
+secrets:
+  mongo-admin-password:
+    file: ${SELFHOST_STATE_ROOT:?Set operator state root}/secrets/mongo-admin-password
+  mongo-app-password:
+    file: ${SELFHOST_STATE_ROOT:?Set operator state root}/secrets/mongo-app-password
+  mongo-backup-password:
+    file: ${SELFHOST_STATE_ROOT:?Set operator state root}/secrets/mongo-backup-password
+  mongo-keyfile:
+    file: ${SELFHOST_STATE_ROOT:?Set operator state root}/secrets/mongo-keyfile
+  mongo-uri:
+    file: ${SELFHOST_STATE_ROOT:?Set operator state root}/secrets/mongo-uri
+  mongo-backup-config:
+    file: ${SELFHOST_STATE_ROOT:?Set operator state root}/secrets/mongo-backup.yml

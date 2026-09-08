@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HTTP_LIMITS } from "@codelift/config";
@@ -155,6 +156,26 @@ function parseMongoUri(value: string | undefined): string | null {
   }
 
   return candidate;
+}
+
+function mongoUriInput(environment: NodeJS.ProcessEnv): string | undefined {
+  const path = environment.MONGO_URI_FILE;
+  if (path === undefined) return environment.MONGO_URI;
+  if (environment.MONGO_URI !== undefined) {
+    throw new Error("Set only one of MONGO_URI and MONGO_URI_FILE.");
+  }
+  try {
+    if (!isAbsolute(path)) throw new Error();
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > 8_192) throw new Error();
+    const value = readFileSync(path, "utf8").trim();
+    if (value === "" || value.includes("\n") || value.includes("\r")) throw new Error();
+    return value;
+  } catch {
+    throw new Error(
+      "MONGO_URI_FILE must be an absolute, readable, nonempty secret file of at most 8192 bytes."
+    );
+  }
 }
 
 function parseDatabaseName(value: string | undefined): string {
@@ -345,7 +366,7 @@ export function loadApiConfig(environment: NodeJS.ProcessEnv = process.env): Api
   const nodeEnv = parseEnvironment(environment.NODE_ENV);
   const webOrigin = parseWebOrigin(environment.WEB_ORIGIN, nodeEnv);
   const persistenceMode = parsePersistenceMode(environment.PERSISTENCE_MODE, nodeEnv);
-  const mongoUri = parseMongoUri(environment.MONGO_URI);
+  const mongoUri = parseMongoUri(mongoUriInput(environment));
 
   if (nodeEnv === "production" && persistenceMode !== "required") {
     throw new Error("PERSISTENCE_MODE must be required in production.");

@@ -13,9 +13,9 @@ if (action !== "seed" && action !== "validate") {
 const environment: NodeJS.ProcessEnv = {
   ...process.env,
   PERSISTENCE_MODE: "required",
-  MONGO_URI:
-    process.env.MONGO_URI ??
-    "mongodb://127.0.0.1:27018/codelift?replicaSet=rs0&directConnection=true",
+  ...(process.env.MONGO_URI === undefined && process.env.MONGO_URI_FILE === undefined
+    ? { MONGO_URI: "mongodb://127.0.0.1:27018/codelift?replicaSet=rs0&directConnection=true" }
+    : {}),
   MONGO_DB_NAME: process.env.MONGO_DB_NAME ?? "codelift"
 };
 const config = loadApiConfig(environment);

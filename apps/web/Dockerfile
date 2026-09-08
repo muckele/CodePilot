@@ -19,6 +19,7 @@ RUN pnpm build:packages && pnpm --filter @codelift/web build
 
 FROM nginxinc/nginx-unprivileged:1.29.5-alpine
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY apps/web/trusted-ingress.conf /etc/nginx/codelift-trusted-ingress.conf
 USER root
 RUN apk upgrade --no-cache \
   && cp /etc/nginx/conf.d/default.conf /tmp/default.runtime.conf \

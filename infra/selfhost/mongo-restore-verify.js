@@ -1,0 +1,26 @@
+try {
+  const admin = db.getSiblingDB("admin");
+  if (
+    !admin.auth(
+      "codelift_admin",
+      require("fs").readFileSync("/run/secrets/mongo-admin-password", "utf8").trim()
+    )
+  )
+    throw new Error();
+  const app = db.getSiblingDB("codelift");
+  if (admin.runCommand({ hello: 1 }).setName !== "rs0") throw new Error();
+  if (!app.users.getIndexes().some((index) => index.unique === true && index.key.email === 1))
+    throw new Error();
+  if (!app.sessions.getIndexes().some((index) => index.expireAfterSeconds === 0)) throw new Error();
+  if (app.selfhost_probe.countDocuments({ committed: true }) !== 2) throw new Error();
+  print(
+    JSON.stringify({
+      restoredIndexesBeforeAppStartup: true,
+      replicaSet: "rs0",
+      representativeData: true
+    })
+  );
+} catch {
+  print("Restored MongoDB metadata verification failed; details suppressed.");
+  quit(1);
+}

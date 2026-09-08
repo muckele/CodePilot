@@ -1,5 +1,15 @@
 # Deployment guide
 
+## Private Mac self-host checkpoint
+
+`infra/compose.selfhost.yaml` is the dedicated M16.3B local self-host stack:
+web, API, and authenticated MongoDB 8 `rs0`, with only `127.0.0.1:8080`
+published. Follow the [private self-host runbook](runbooks/self-host.md) for
+operator state, secret-file configuration, bounded builds, initialization,
+encrypted local backup, isolated restore, and persistence verification. It
+keeps production HTTPS-origin and Secure-cookie policy while public exposure
+and real HTTPS browser testing remain deferred.
+
 ## Reproducible local stack
 
 ```bash

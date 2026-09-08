@@ -78,6 +78,17 @@ React state/status primitives in `packages/ui`.
 Node and pnpm versions are pinned in `.nvmrc`, `.node-version`, and
 `package.json`.
 
+## Private Mac self-host checkpoint
+
+The dedicated `infra/compose.selfhost.yaml` runs web, the Node API, and an
+authenticated MongoDB replica set with persistent storage, conservative
+resource limits, and only `127.0.0.1:8080` published. It defaults to
+invitation-only/mock mode, consumes individual secret files outside the
+repository, and includes encrypted local backup plus an isolated restore drill.
+Follow the [self-host runbook](docs/runbooks/self-host.md). Public HTTPS, a real
+secure-cookie browser journey, off-device backup, and reboot/power verification
+remain separate gates; the full development demo below is unchanged.
+
 ## Fastest complete no-key demo
 
 Build the application images one at a time, matching the bounded release-smoke

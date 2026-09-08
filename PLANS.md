@@ -2,12 +2,12 @@
 
 ## Status
 
-- Current milestone: **M16 — private-pilot MVP launch readiness**
-- State: **candidate repaired and reviewed; one required automated WebKit release
-  gate remains red; exact-revision evidence decides the release verdict** on
-  `codex/mvp-launch-readiness` from verified baseline
-  `424de51004e08e7e6b115b72e61519c35388f040`
-- Updated: 2026-09-02 (America/Los_Angeles)
+- Current milestone: **M16.3B — private self-host local implementation and verification**
+- State: local three-service stack, encrypted backup/isolated restore, and
+  restart persistence verified on `codex/selfhost-private-mvp`, isolated from
+  verified source baseline `5e85e6463f30f2d5c069941e282335784718659c`.
+  The changed revision still requires its clean-commit aggregate and exact-SHA CI.
+- Updated: 2026-09-08 (America/Los_Angeles)
 - Passing threshold: 95/100 with zero critical failures
 
 ## User value
@@ -262,3 +262,62 @@ If all source gates pass and those operator-owned inputs remain absent, the
 truthful terminal status is `SOURCE_MVP_COMPLETE_DEPLOYMENT_PENDING`. If the
 WebKit gate remains red, the truthful status is `MVP_BLOCKED`. Neither state is
 a localhost production claim.
+
+## 2026-09-08 M16.3B private self-host checkpoint
+
+The authoritative checkpoint request identifies `5e85e6463f30f2d5c069941e282335784718659c`
+as `SOURCE_MVP_COMPLETE`, with its prior 100/100, 27/27-command, 12/12-browser,
+exact-SHA CI evidence. The older candidate dispositions above remain historical;
+they are not the status of that verified baseline or a substitute for new gates.
+
+Implemented only deployment/security/operations changes: a separate self-host
+Compose definition, authenticated MongoDB 8.0.26 single-member `rs0`, least-
+privileged app and backup roles, secret-file API/seed input, exact ingress trust
+and bounded authentication limits, external operator state, encrypted local
+backup, isolated restore, and executable operational tests. No curriculum,
+master-prompt, product feature, public ingress, or external service was added.
+
+Local evidence from the development candidate:
+
+- `node infra/selfhost/cli.mjs build`, `up`, `seed`, `fixture`, and `check`
+  passed. Exactly web/API/Mongo run; only `127.0.0.1:8080` is published. API
+  topology/index startup, authenticated reads, unauthenticated denial, backup
+  write denial, transactions/rollback, and tenant account export pass.
+- Focused tests captured RED before the secret-file and seed changes, real
+  proxy/header/rate behavior, authenticated initialization, backup safety, and
+  disk/stack operations. Immediate-start Mongo initialization now uses the
+  existing bounded socket wait before the authenticated shell. Repeated init
+  is clean and an unexpected member is rejected without reconfiguration.
+- Actual Mac loopback requests identified the fixed private ingress gateway
+  `172.26.0.1`; trusted HTTPS maps to port 443, missing/invalid/untrusted scheme
+  signals fall back safely, and exact Host/Origin are preserved. Only the real
+  `/api/v1/auth/` access endpoints use the bounded Nginx limiter.
+- A local 308,521-byte recipient-encrypted backup completed in 895 ms; an
+  isolated authenticated restore completed in 10,677 ms. Restored indexes were
+  checked before application startup, data fingerprints matched, and tenant
+  export plus transactions passed. Plaintext existed only in container tmpfs;
+  the isolated container, volume and network were removed afterward. These
+  development measurements identify their source revision/dirty state in
+  ignored operator evidence; they are not clean-commit release evidence.
+- Mongo restart, API/web restart, and Compose down/up without volume deletion
+  preserve synthetic user data. Global seed timestamps intentionally change
+  during API startup, so restart checks compare user state while restore checks
+  compare the complete database snapshot.
+- API unit tests pass 75/75; affected HTTP/config/topology suites pass 56/56 in
+  the pinned isolated test image. Workspace/E2E TypeScript, strict Python
+  typechecking, ESLint and Ruff pass. Source contract checks pass. The full
+  release-quality aggregate is reserved for the reviewed clean revision.
+
+The private operator root is outside the repository and user document roots;
+secrets are never passed as arguments or environment values. Bounded source,
+inspect, and log scans found no runtime secret values. APFS remained above the
+35 GiB start floor throughout builds/restore. Exact start/minimum/end space and
+resource measurements are retained with the ignored implementation report.
+
+Remaining gates are the new revision's aggregate and exact-SHA CI, followed by
+separately authorized Tailscale/Funnel HTTPS, real browser/cookie and proxy-hop
+verification, off-device backup/key recovery, and reboot/power behavior. Docker
+Desktop restart is deferred because unrelated BigCapital containers remain
+active. The candidate named volume and all unrelated resources are preserved.
+See [M16.3B](docs/milestones/16-3b-private-self-host.md) and the
+[operator runbook](docs/runbooks/self-host.md).

@@ -31,6 +31,13 @@ for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
   sleep 1
 done
 
+# Reuse the socket wait above before starting an authenticated shell: the
+# official entrypoint may still be starting mongod after a container restart.
+if [[ "${MONGO_AUTH_ENABLED:-false}" == "true" ]]; then
+  exec mongosh --quiet --host "${mongo_host}" --port "${mongo_port}" \
+    /opt/codelift/selfhost/mongo-init.js
+fi
+
 mongosh \
   --quiet \
   --host "${mongo_host}" \

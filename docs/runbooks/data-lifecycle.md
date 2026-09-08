@@ -1,5 +1,12 @@
 # Data lifecycle, backup, restore, and deletion
 
+For the private Mac checkpoint, the executable database-only, write-locked,
+recipient-encrypted backup and isolated local restore workflow is documented
+in the [self-host runbook](self-host.md). It retains eight local ciphertext
+archives and recreates database authentication from separate operator secrets.
+No off-device destination or automatic backup schedule has been configured;
+the provider proposal below remains a separate hosted-deployment option.
+
 MongoDB stores product state. PostgreSQL is a separate curriculum lab and is
 not needed to restore product operation.
 

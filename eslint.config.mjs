@@ -60,11 +60,26 @@ export default tseslint.config(
     }
   },
   {
-    files: ["**/*.config.{js,mjs,ts}", "infra/scripts/**/*.mjs"],
+    files: ["**/*.config.{js,mjs,ts}", "infra/scripts/**/*.mjs", "infra/selfhost/**/*.mjs"],
     languageOptions: {
       globals: {
         ...globals.node
       }
     }
+  },
+  {
+    files: ["infra/selfhost/mongo-*.js"],
+    languageOptions: {
+      sourceType: "commonjs",
+      globals: {
+        ...globals.node,
+        db: "readonly",
+        quit: "readonly",
+        print: "readonly",
+        sleep: "readonly",
+        Mongo: "readonly"
+      }
+    },
+    rules: { "@typescript-eslint/no-require-imports": "off" }
   }
 );

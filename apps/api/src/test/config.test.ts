@@ -1,9 +1,69 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { buildAccountAccessUrl } from "../account/access-operator.js";
 import { loadApiConfig } from "../config.js";
 
 describe("API M2 configuration", () => {
+  it("lets the seed CLI consume the same secret-file boundary without injecting a default URI", () => {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "src/seed/cli.ts", "validate"], {
+      cwd: fileURLToPath(new URL("../../", import.meta.url)),
+      env: { PATH: process.env.PATH, MONGO_URI_FILE: "/nonexistent/codelift-fixture-secret" },
+      encoding: "utf8"
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "MONGO_URI_FILE must be an absolute, readable, nonempty secret file"
+    );
+    expect(result.stderr).not.toContain("Set only one");
+  });
+  it("loads an authenticated Mongo URI from a bounded secret file without changing the environment", () => {
+    const directory = mkdtempSync(join(tmpdir(), "codelift-config-"));
+    const path = join(directory, "mongo-uri");
+    const uri =
+      "mongodb://fixture:synthetic@mongodb:27017/codelift?replicaSet=rs0&authSource=codelift";
+    try {
+      writeFileSync(path, `${uri}\n`, { mode: 0o600 });
+      const environment = { MONGO_URI_FILE: path };
+      expect(loadApiConfig(environment).persistence.mongoUri).toBe(uri);
+      expect(environment).toEqual({ MONGO_URI_FILE: path });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for ambiguous, missing, empty, oversized, or invalid Mongo secret files", () => {
+    const directory = mkdtempSync(join(tmpdir(), "codelift-config-"));
+    const path = join(directory, "mongo-uri");
+    try {
+      expect(() => loadApiConfig({ MONGO_URI: "mongodb://fixture", MONGO_URI_FILE: path })).toThrow(
+        "MONGO_URI"
+      );
+      expect(() => loadApiConfig({ MONGO_URI_FILE: path })).toThrow("MONGO_URI_FILE");
+      expect(() => loadApiConfig({ MONGO_URI_FILE: "relative-secret" })).toThrow("MONGO_URI_FILE");
+      expect(() => loadApiConfig({ MONGO_URI_FILE: directory })).toThrow("MONGO_URI_FILE");
+      for (const content of [
+        "",
+        " ",
+        "x".repeat(8193),
+        "https://synthetic:private@example.invalid"
+      ]) {
+        writeFileSync(path, content, { mode: 0o600 });
+        expect(() => loadApiConfig({ MONGO_URI_FILE: path })).toThrow(/MONGO_URI/);
+        try {
+          loadApiConfig({ MONGO_URI_FILE: path });
+        } catch (error) {
+          expect(String(error)).not.toContain("synthetic:private");
+        }
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it.each([
     ["invite" as const, "invite", "i".repeat(43)],
     ["password_reset" as const, "token", "r".repeat(43)]

@@ -30,7 +30,7 @@ The acceptance distinction is deliberate:
 | M16.8 pilot learning loop          | thresholded aggregate metrics, exact five research questions, and hypothesis-labeled launch/continue/stop criteria                                                                     |
 | M16.9 release governance           | deployment decision packet, draft PR/required checks, protected environment guidance, safe default-branch playbook, and no live claim without restore/smoke evidence                   |
 
-## Current verification disposition
+## Earlier candidate verification disposition (historical)
 
 - Chromium release journeys pass 11/11, including the critical-flow axe scan.
 - Focused post-review evidence passes the 72-test API unit suite, affected
@@ -75,3 +75,13 @@ remain ignored evidence rather than checked-in proof.
 
 Until the exact-revision source gates pass, this milestone remains
 implementation evidence rather than a release claim.
+
+## Subsequent private self-host checkpoint
+
+The M16.3B request identifies `5e85e6463f30f2d5c069941e282335784718659c` as the
+subsequently verified `SOURCE_MVP_COMPLETE` baseline, including its green
+release aggregate and exact-SHA CI. New deployment-only work is isolated on
+`codex/selfhost-private-mvp`; see [M16.3B local self-host](16-3b-private-self-host.md).
+That changed source requires fresh aggregate/CI evidence and does not inherit
+the baseline result. Its local restore and loopback checks do not establish a
+public HTTPS pilot.
