@@ -344,3 +344,11 @@ Temporary restore Mongo alone disables TTL deletion until fidelity checks,
 while preserved TTL indexes and an expired archived session are verified
 across a real TTL interval; candidate TTL remains enabled. No deferred Minor
 observation, public boundary or product behavior is changed in this wave.
+
+Closing inventory caught an implicit anonymous `/data/configdb` volume in
+the new stopped test sentinel. A real mount-footprint RED proved the leak;
+bounded tmpfs removes it. `node --test infra/selfhost/restore-safety.test.mjs`
+passed both safety paths afterward. Seven exact timestamp/label-proven empty
+test volumes were removed non-force, returning inventory to 64 while retaining
+all other volumes. This correction uses an ordinary follow-up commit without
+rewriting the preceding commit or its verified backup.

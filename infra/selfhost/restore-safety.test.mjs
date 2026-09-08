@@ -23,6 +23,7 @@ for (const mode of ["success", "early-failure"]) {
     const network = `codelift-selfhost-restore-1-${process.pid}${mode === "success" ? "1" : "2"}`;
     const container = `${network}-mongo`;
     const volume = `${network}-data`;
+    let anonymousVolumes = [];
     const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
     try {
       initializeState(root);
@@ -46,9 +47,19 @@ for (const mode of ["success", "early-failure"]) {
         network,
         "--mount",
         `type=volume,src=${volume},dst=/data/db`,
+        "--tmpfs",
+        "/data/configdb:size=16m,mode=0700",
         "--entrypoint",
         "true",
         mongoImage
+      );
+      anonymousVolumes = JSON.parse(docker("inspect", container))[0]
+        .Mounts.filter((mount) => mount.Type === "volume" && mount.Name !== volume)
+        .map((mount) => mount.Name);
+      assert.equal(
+        anonymousVolumes.length,
+        0,
+        "the retained diagnostic sentinel must not create undeclared anonymous volumes"
       );
       const stale = join(root, "evidence/restore-resources.json");
       writeFileSync(stale, JSON.stringify({ network, container, volume, hostPorts: [] }), {
@@ -102,7 +113,8 @@ for (const mode of ["success", "early-failure"]) {
       for (const args of [
         ["rm", "-f", container],
         ["volume", "rm", volume],
-        ["network", "rm", network]
+        ["network", "rm", network],
+        ...anonymousVolumes.map((name) => ["volume", "rm", name])
       ]) {
         try {
           docker(...args);
