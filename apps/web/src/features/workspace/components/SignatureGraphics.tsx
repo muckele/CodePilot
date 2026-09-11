@@ -43,7 +43,7 @@ export function JourneyMap({
   ).length;
 
   return (
-    <figure className={`journey-map${compact ? " journey-map--compact" : ""}`}>
+    <figure className={`journey-map${compact ? " journey-map--compact" : ""}`} tabIndex={0}>
       <svg viewBox="0 0 600 104" role="img" aria-labelledby="journey-title journey-desc">
         <title id="journey-title">Journey Map</title>
         <desc id="journey-desc">
@@ -130,7 +130,7 @@ export function MomentumOrbit({ summary }: { summary: ProgressSummary }) {
 export function SkillConstellation({ skills }: { skills: readonly SkillRecord[] }) {
   const visible = skills.slice(0, 18);
   return (
-    <figure className="skill-constellation">
+    <figure className="skill-constellation" tabIndex={0}>
       <svg viewBox="0 0 600 260" role="img" aria-labelledby="skills-title skills-desc">
         <title id="skills-title">Skill Constellation</title>
         <desc id="skills-desc">
@@ -181,7 +181,12 @@ export function SkillConstellation({ skills }: { skills: readonly SkillRecord[] 
 
 export function CodeGarden({ artifacts }: { artifacts: readonly PortfolioArtifact[] }) {
   return (
-    <div className="code-garden" role="img" aria-label="Code Garden portfolio visualization">
+    <div
+      className="code-garden"
+      role="img"
+      aria-label="Code Garden portfolio visualization"
+      tabIndex={0}
+    >
       {artifacts.slice(0, 13).map((artifact, index) => {
         const maturity =
           artifact.status === "published"
