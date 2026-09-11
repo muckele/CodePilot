@@ -173,6 +173,25 @@ afterEach(() => {
 });
 
 describe("development Admin surface", () => {
+  it("keeps the resource table scroll region keyboard focusable", async () => {
+    vi.spyOn(learningApi, "admin").mockResolvedValue(overview);
+
+    render(
+      <MemoryRouter>
+        <AdminPage csrfToken={"a".repeat(43)} />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole("heading", { name: "1 visible resources" })).toBeInTheDocument();
+    const table = screen.getByRole("table");
+    const scrollRegion = table.parentElement;
+    expect(table.tagName).toBe("TABLE");
+    expect(scrollRegion).toHaveClass("table-scroll");
+    expect(scrollRegion).toHaveAttribute("tabindex", "0");
+    scrollRegion?.focus();
+    expect(scrollRegion).toHaveFocus();
+  });
+
   it("inspects diagnostics and performs explicitly confirmed development controls", async () => {
     const csrfToken = "a".repeat(43);
     vi.spyOn(learningApi, "admin").mockResolvedValue(overview);

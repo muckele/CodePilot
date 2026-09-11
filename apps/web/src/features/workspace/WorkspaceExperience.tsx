@@ -1419,7 +1419,7 @@ function OperationsPage({ csrfToken }: { csrfToken: string | null }) {
       </div>
       <section className="mission-card">
         <h2>Provider capability matrix</h2>
-        <div className="table-scroll">
+        <div className="table-scroll" tabIndex={0}>
           <table>
             <thead>
               <tr>
