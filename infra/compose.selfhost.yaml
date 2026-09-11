@@ -27,7 +27,7 @@ services:
     image: mongo:8.0.26@sha256:3ce3de7f40e914034b03b7dec654005ab54f7dc8306937e44ec6760d9e9409a1
     cpus: 1
     mem_limit: 1536m
-    restart: unless-stopped
+    restart: always
     stop_grace_period: 60s
     entrypoint: ["bash", "/opt/codelift/selfhost/mongo-entrypoint.sh"]
     command:
@@ -103,7 +103,7 @@ services:
     user: "${SELFHOST_UID:?Set operator UID}:${SELFHOST_GID:?Set operator GID}"
     cpus: 1
     mem_limit: 512m
-    restart: unless-stopped
+    restart: always
     stop_grace_period: 30s
     init: true
     cap_drop: [ALL]
@@ -132,7 +132,7 @@ services:
     build: { context: .., dockerfile: apps/web/Dockerfile }
     cpus: 0.25
     mem_limit: 128m
-    restart: unless-stopped
+    restart: always
     stop_grace_period: 30s
     cap_drop: [ALL]
     tmpfs:

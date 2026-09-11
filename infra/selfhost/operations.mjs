@@ -107,7 +107,7 @@ export async function checkStack() {
     if (service === "web") assert.deepEqual(ports, [{ HostIp: "127.0.0.1", HostPort: "8080" }]);
     else assert.equal(ports.length, 0);
     assert.equal(entry.State.Health.Status, "healthy");
-    assert.equal(entry.HostConfig.RestartPolicy.Name, "unless-stopped");
+    assert.equal(entry.HostConfig.RestartPolicy.Name, "always");
     assert.equal(entry.HostConfig.ReadonlyRootfs, true);
     assert.ok(entry.HostConfig.SecurityOpt.includes("no-new-privileges:true"));
     assert.equal(entry.HostConfig.LogConfig.Config["max-size"], "5m");

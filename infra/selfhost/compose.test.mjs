@@ -71,6 +71,19 @@ test("rendered self-host deployment exposes only loopback web and gives private 
   assert.equal(config.networks.backend.internal, true);
 });
 
+test("rendered self-host production services restart after an orderly host shutdown", () => {
+  const result = render();
+  assert.equal(result.status, 0, "self-host Compose must render");
+  const config = JSON.parse(result.stdout);
+
+  for (const name of ["web", "api", "mongodb"])
+    assert.equal(
+      config.services[name].restart,
+      "always",
+      `${name} must restart after host shutdown`
+    );
+});
+
 test("self-host Compose requires an explicit origin, proxy count and operator identity", () => {
   for (const name of [
     "TRUST_PROXY_HOPS",
