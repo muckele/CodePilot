@@ -1,7 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
 
-import { accountFor, deleteAccountThroughProduct, provisionAccount } from "./support/journey.js";
+import { accountFor, cleanupSyntheticAccount, provisionAccount } from "./support/journey.js";
 
 const narrowViewport = { width: 320, height: 900 } as const;
 const wideViewport = { width: 1_440, height: 1_000 } as const;
@@ -88,7 +88,7 @@ test("Journey Map scroll regions remain keyboard accessible at 320px", async ({
 
     await expectWideLayout(page, "/app/today", "Today’s mission");
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -110,7 +110,7 @@ test("Skill Constellation remains keyboard accessible at 320px", async ({ page }
 
     await expectWideLayout(page, "/app/skills", "Mastery is more than completion.");
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -131,7 +131,7 @@ test("Code Garden remains keyboard accessible at 320px", async ({ page }, testIn
 
     await expectWideLayout(page, "/app/portfolio", "Grow the story from real evidence.");
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -157,6 +157,6 @@ test("the Evals table scroll region remains keyboard accessible at 320px", async
     await expectWideLayout(page, "/app/evals", "Provider capability matrix");
     await expect(page.getByRole("table")).toBeVisible();
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });

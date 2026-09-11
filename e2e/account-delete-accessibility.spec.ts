@@ -1,7 +1,7 @@
 import { AxeBuilder } from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
-import { accountFor, deleteAccountThroughProduct, provisionAccount } from "./support/journey.js";
+import { accountFor, cleanupSyntheticAccount, provisionAccount } from "./support/journey.js";
 
 interface RgbColor {
   readonly red: number;
@@ -75,6 +75,6 @@ test("the enabled account-deletion action remains readable after password valida
     });
     expect(contrastRatio(colors.foreground, colors.background)).toBeGreaterThanOrEqual(4.5);
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });

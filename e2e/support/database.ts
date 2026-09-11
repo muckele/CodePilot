@@ -3,6 +3,8 @@ import { issueInvitation } from "../../apps/api/src/account/access-operator.js";
 
 import { E2E_DATABASE_NAME, E2E_MONGO_URI, guardedE2eDatabaseName } from "./environment.js";
 
+const syntheticAccountEmail = /^e2e-[a-z0-9][a-z0-9-]*-[a-f0-9]{12}@example\.test$/u;
+
 async function openE2ePersistence() {
   guardedE2eDatabaseName(E2E_MONGO_URI);
   const runtime = await initializePersistence({
@@ -42,9 +44,104 @@ export async function issueE2eInvitation(email: string): Promise<string> {
   }
 }
 
+export async function deleteE2eSyntheticAccount(email: string): Promise<void> {
+  if (!syntheticAccountEmail.test(email)) {
+    throw new Error("E2E cleanup requires an explicit synthetic Playwright account email.");
+  }
+
+  const runtime = await openE2ePersistence();
+  try {
+    const user = await runtime.models.User.findOne({ email }).select({ _id: 1, email: 1 }).lean();
+    if (user === null) {
+      await runtime.models.Invitation.deleteMany({ email });
+      return;
+    }
+
+    const databaseSession = await runtime.connection.startSession();
+    try {
+      await databaseSession.withTransaction(async () => {
+        // Mongo does not support parallel operations on one transaction. This
+        // test-only registry deliberately mirrors the product-owned records.
+        await runtime.models.Progress.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.Reflection.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.UserActivity.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.XpEvent.deleteMany({ userId: user._id }, { session: databaseSession });
+        await runtime.models.UserAchievement.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.SkillEvidence.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.ReviewItem.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.Misconception.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.ErrorMuseumEntry.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.PortfolioArtifact.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.AiTrace.deleteMany({ userId: user._id }, { session: databaseSession });
+        await runtime.models.EvalRun.deleteMany({ userId: user._id }, { session: databaseSession });
+        await runtime.models.IndexedSource.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.AgentRun.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.JobApplication.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await runtime.models.Session.deleteMany({ userId: user._id }, { session: databaseSession });
+        await runtime.models.Invitation.deleteMany(
+          { $or: [{ consumedByUserId: user._id }, { email }] },
+          { session: databaseSession }
+        );
+        await runtime.models.PasswordReset.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        const deleted = await runtime.models.User.deleteOne(
+          { _id: user._id, email },
+          { session: databaseSession }
+        );
+        if (deleted.deletedCount !== 1) {
+          throw new Error("Synthetic Playwright account ownership changed during cleanup.");
+        }
+      });
+    } finally {
+      await databaseSession.endSession();
+    }
+  } finally {
+    await closePersistence(runtime);
+  }
+}
+
 export interface UserOwnedCounts {
   readonly user: number;
   readonly sessions: number;
+  readonly userActivities: number;
   readonly invitations: number;
   readonly passwordResets: number;
   readonly progress: number;
@@ -70,6 +167,7 @@ export async function userOwnedCounts(userId: string): Promise<UserOwnedCounts> 
     const [
       user,
       sessions,
+      userActivities,
       invitations,
       passwordResets,
       progress,
@@ -90,6 +188,7 @@ export async function userOwnedCounts(userId: string): Promise<UserOwnedCounts> 
     ] = await Promise.all([
       runtime.models.User.countDocuments({ _id: userId }),
       runtime.models.Session.countDocuments({ userId }),
+      runtime.models.UserActivity.countDocuments({ userId }),
       runtime.models.Invitation.countDocuments({ consumedByUserId: userId }),
       runtime.models.PasswordReset.countDocuments({ userId }),
       runtime.models.Progress.countDocuments({ userId }),
@@ -111,6 +210,7 @@ export async function userOwnedCounts(userId: string): Promise<UserOwnedCounts> 
     return {
       user,
       sessions,
+      userActivities,
       invitations,
       passwordResets,
       progress,

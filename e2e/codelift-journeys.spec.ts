@@ -9,7 +9,7 @@ import {
   accountFor,
   completeMission,
   dashboard,
-  deleteAccountThroughProduct,
+  cleanupSyntheticAccount,
   isoDateDaysAgo,
   provisionAccount,
   recordUnexpectedBrowserErrors,
@@ -207,7 +207,7 @@ test("1. register → onboard → Day 1 → Core evidence/reflection → complet
     await expect(page.getByText("Day 2 of 365", { exact: true })).toBeVisible();
     await expect(page.getByText("30 XP", { exact: true })).toBeVisible();
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -231,7 +231,7 @@ test("2. a missed calendar day keeps the next incomplete curriculum day", async 
     expect(snapshot.summary.currentDayNumber).toBe(1);
     expect(snapshot.missedCalendarDays).toBeGreaterThanOrEqual(2);
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -257,7 +257,7 @@ test("3. Recovery remains distinct and uses humane completion feedback", async (
       xp: 5
     });
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -293,7 +293,7 @@ test("4. an unavailable Python provider returns deterministic usable fallback gu
       "does not claim understanding"
     );
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -366,7 +366,7 @@ test("5. a private note answer is grounded and every citation resolves", async (
     await expect(page.getByText("Source-supported", { exact: true })).toBeVisible();
     await expect(page.locator(".rag-answer").getByText(sourceTitle, { exact: true })).toBeVisible();
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -414,8 +414,8 @@ test("6. two browser users never receive each other’s notes or search results"
     await expect(page.getByText("Unsupported / unknown", { exact: true })).toBeVisible();
     expect(pageBErrors).toEqual([]);
   } finally {
-    await deleteAccountThroughProduct(page, accountA);
-    await deleteAccountThroughProduct(pageB, accountB);
+    await cleanupSyntheticAccount(accountA);
+    await cleanupSyntheticAccount(accountB);
     await contextB.close();
   }
 });
@@ -499,7 +499,7 @@ test("7. a weekly plan remains read-only until explicit human approval", async (
       ).status
     ).toBe("not_started");
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -543,6 +543,7 @@ test("8. account deletion removes product records and derived indexed chunks", a
   expect(await userOwnedCounts(userId)).toEqual({
     user: 0,
     sessions: 0,
+    userActivities: 0,
     invitations: 0,
     passwordResets: 0,
     progress: 0,
@@ -769,7 +770,7 @@ test("10. release visual and accessibility evidence covers responsive, theme, mo
       contentType: "application/json"
     });
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -803,7 +804,7 @@ test("11. automated accessibility scans cover every private-pilot critical flow"
       await expectNoCriticalAccessibilityViolations(page, route);
     }
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });
 
@@ -828,6 +829,6 @@ test("12. @mobile-webkit invitation cookie, Today, logout, and return smoke", as
     await expect(page).toHaveURL(/\/app\/today$/u);
     await expect(page.getByRole("heading", { name: "Today’s mission" })).toBeVisible();
   } finally {
-    await deleteAccountThroughProduct(page, account);
+    await cleanupSyntheticAccount(account);
   }
 });

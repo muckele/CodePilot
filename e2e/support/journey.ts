@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { expect, type Page, type TestInfo } from "@playwright/test";
 
 import { E2E_BASE_URL } from "./environment.js";
-import { issueE2eInvitation } from "./database.js";
+import { deleteE2eSyntheticAccount, issueE2eInvitation } from "./database.js";
 
 export interface TestAccount {
   readonly email: string;
@@ -188,48 +188,8 @@ export async function registerAndOnboardWithKeyboard(
   return (await responseJson<AuthenticatedUserResponse>(me, "Authenticated user lookup")).user.id;
 }
 
-async function signInForCleanup(page: Page, account: TestAccount): Promise<string | null> {
-  const protection = await csrfToken(page);
-  const login = await page.request.post("/api/v1/auth/login", {
-    headers: {
-      Origin: E2E_BASE_URL,
-      "X-CSRF-Token": protection
-    },
-    data: {
-      email: account.email,
-      password: account.password
-    }
-  });
-  if (login.status() === 401) return null;
-  return (await responseJson<AuthResponse>(login, "Cleanup sign-in")).csrfToken;
-}
-
-export async function deleteAccountThroughProduct(page: Page, account: TestAccount): Promise<void> {
-  const meResponse = await page.request.get("/api/v1/me");
-  const me = await responseJson<
-    | AuthenticatedUserResponse
-    | {
-        readonly authenticated: false;
-      }
-  >(meResponse, "Cleanup user lookup");
-  const protection = me.authenticated
-    ? await csrfToken(page)
-    : await signInForCleanup(page, account);
-  if (protection === null) return;
-
-  const deletion = await page.request.delete("/api/v1/me", {
-    headers: {
-      Origin: E2E_BASE_URL,
-      "X-CSRF-Token": protection
-    },
-    data: {
-      password: account.password,
-      confirmation: "DELETE"
-    }
-  });
-  if (deletion.status() !== 204) {
-    throw new Error(`Cleanup account deletion returned HTTP ${deletion.status()}.`);
-  }
+export async function cleanupSyntheticAccount(account: TestAccount): Promise<void> {
+  await deleteE2eSyntheticAccount(account.email);
 }
 
 export async function dashboard(page: Page): Promise<DashboardSnapshot> {
