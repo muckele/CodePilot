@@ -1,9 +1,12 @@
 {
   "evidenceVersion": 2,
-  "observedAt": "2026-09-08T18:41:40Z",
-  "sourceDigest": "ebf96dd57e95034d362a8f1e5c2d953bafcd0056f4c8b9deb4c15ebd1257e54a",
-  "reviewProfile": "manual-in-app-browser-plus-real-playwright-supplemental",
-  "reviewIdentity": "synthetic example.test accounts only",
+  "observedAt": "2026-09-11T17:24:46.336Z",
+  "observationSourceRevision": "b13f9dc178e1ac08b0758b634a4952ec18bfcbe1",
+  "sourceDigest": "0662fbace090b11db315a5441448b9f0cd7eec59e4cc9f8edacf36e590d5ec87",
+  "reviewProfile": "manual-repository-playwright-chromium",
+  "reviewIdentity": "fresh synthetic example.test accounts only",
+  "browser": "Chromium from the repository Playwright installation",
+  "browserPlugin": "not available",
   "responsiveWide": true,
   "responsiveNarrow": true,
   "darkTheme": true,
@@ -63,8 +66,72 @@
       "horizontalOverflow": false,
       "visibleOverflowOffenders": 0,
       "intentionalHorizontalScrollRegions": [
-        "nav.site-nav",
-        "figure.journey-map.journey-map--compact"
+        {
+          "surface": "Today",
+          "selector": "nav.site-nav",
+          "clientWidth": 308,
+          "scrollWidth": 453
+        },
+        {
+          "surface": "Today",
+          "selector": "figure.journey-map.journey-map--compact",
+          "clientWidth": 306,
+          "scrollWidth": 536,
+          "tabIndex": 0,
+          "focusedOutlineWidthPx": 3,
+          "arrowRightScrollLeftBefore": 0,
+          "arrowRightScrollLeftAfter": 40
+        },
+        {
+          "surface": "Roadmap",
+          "selector": "figure.journey-map",
+          "clientWidth": 306,
+          "scrollWidth": 536,
+          "tabIndex": 0,
+          "focusedOutlineWidthPx": 3,
+          "arrowRightScrollLeftBefore": 0,
+          "arrowRightScrollLeftAfter": 40
+        },
+        {
+          "surface": "Skills",
+          "selector": "figure.skill-constellation",
+          "clientWidth": 306,
+          "scrollWidth": 616,
+          "tabIndex": 0,
+          "focusedOutlineWidthPx": 3,
+          "arrowRightScrollLeftBefore": 0,
+          "arrowRightScrollLeftAfter": 40
+        },
+        {
+          "surface": "Portfolio",
+          "selector": "div.code-garden",
+          "clientWidth": 306,
+          "scrollWidth": 768,
+          "tabIndex": 0,
+          "focusedOutlineWidthPx": 3,
+          "arrowRightScrollLeftBefore": 0,
+          "arrowRightScrollLeftAfter": 40
+        },
+        {
+          "surface": "Evals",
+          "selector": "div.table-scroll",
+          "clientWidth": 274,
+          "scrollWidth": 601,
+          "tabIndex": 0,
+          "focusedOutlineWidthPx": 3,
+          "arrowRightScrollLeftBefore": 0,
+          "arrowRightScrollLeftAfter": 40
+        },
+        {
+          "surface": "Development Admin",
+          "selector": "div.table-scroll",
+          "clientWidth": 274,
+          "scrollWidth": 547,
+          "tabIndex": 0,
+          "focusedOutlineWidthPx": 3,
+          "arrowRightScrollLeftBefore": 0,
+          "arrowRightScrollLeftAfter": 40
+        }
       ]
     },
     "motion": {
@@ -82,52 +149,54 @@
       "mainCount": 1,
       "contentInfoCount": 1,
       "focusOutlineWidthPx": 3,
+      "skipLinkFirstTabStop": true,
       "skipTarget": "main#main-content",
       "lightPrimaryTextContrastRatio": 14.66,
-      "darkPrimaryTextContrastRatio": 18.17
+      "darkPrimaryTextContrastRatio": 18.17,
+      "accountDeleteActionContrastRatio": 9.09,
+      "accountDeleteAxeWideViolations": 0,
+      "accountDeleteAxe320Violations": 0
     }
   },
   "behavioralEvidence": {
-    "playwrightJourneys": {
-      "passed": 12,
-      "failed": 0,
-      "durationSeconds": 36.7,
-      "durationScope": "source-bound full E2E run including the mobile-WebKit gate",
-      "browser": "chromium 11 passed; mobile-webkit 1 passed",
-      "consoleErrors": 0,
-      "mobileWebKitDisposition": "Reauthentication honored returnTo=/app/account, rendered protected account content, navigated through the product Today link, rendered Today’s mission, and preserved successful synthetic-account deletion."
-    },
-    "postReviewTargetedJourney": {
-      "passed": 1,
-      "failed": 0,
-      "browser": "chromium",
-      "scope": "fragment-only invitation/reset routes and critical-flow accessibility after the final source repairs",
-      "consoleErrors": 0
-    },
-    "containerWebHealth": {
+    "completeManualObservation": {
+      "startedAt": "2026-09-11T17:24:18.036Z",
+      "completedAt": "2026-09-11T17:24:46.336Z",
       "passed": true,
-      "runtimeUser": "101:101",
-      "nginxSyntax": "valid",
-      "healthEndpoint": "/healthz returned HTTP 200",
-      "runtimeUpstream": "api:4000"
+      "wideSurfacesPassed": 14,
+      "narrowSurfacesPassed": 14,
+      "axeViolations": 0,
+      "unexpectedConsoleErrors": 0,
+      "pageExceptions": 0
     },
     "manualBrowser": {
       "requiredPrivatePagesPassed": 11,
       "additionalPagesPassed": 3,
-      "consoleErrors": 0,
-      "supportedRagScore": 0.82,
+      "unexpectedConsoleErrors": 0,
+      "supportedRagMaximumCitationScore": 0.6063,
       "unrelatedRagQuestionAbstained": true,
       "sourceDeletionFocusTarget": "h2 Indexed sources",
-      "accountDeletionResult": "login route with deletion confirmation",
+      "accountDeletionResult": "all synthetic account records removed",
+      "visualGalleryStates": 18,
       "visualGalleryRecoveryXp": "+5 XP"
     },
+    "expectedAccountDeletionValidationFailure": {
+      "method": "DELETE",
+      "pathname": "/api/v1/me",
+      "status": 401,
+      "consoleMessage": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "requestScopedAllowanceConsumedExactlyOnce": true,
+      "validationAlertRenderedAndFocused": true,
+      "allowanceDisarmedAfterUse": true,
+      "unrelatedHttpAndConsoleFailuresRemainFatal": true
+    },
     "focusChecks": [
-      "registration validation error focused its alert",
       "account-deletion validation error focused its alert",
       "RAG deletion confirmation focused the destructive confirmation action",
       "RAG deletion cancel restored the originating action",
       "successful RAG deletion focused the refreshed Indexed sources heading",
-      "skip link exposed a 3px focus outline and targeted main#main-content"
+      "skip link was the first Tab stop, exposed a 3px focus outline, and moved focus to main#main-content",
+      "Journey Map, Skill Constellation, Code Garden, Evals table, and Admin table accepted keyboard focus and ArrowRight scrolling at 320px"
     ],
     "groundingChecks": [
       "Cedar operating note produced a source-supported answer with a resolvable citation",
