@@ -1758,7 +1758,7 @@ a {
 }
 
 .button--danger {
-  color: #fff;
+  color: var(--color-error-surface);
   background: var(--color-error);
 }
 
