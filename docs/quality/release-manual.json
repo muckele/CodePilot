@@ -1,8 +1,8 @@
 {
   "evidenceVersion": 2,
-  "observedAt": "2026-09-11T17:24:46.336Z",
-  "observationSourceRevision": "b13f9dc178e1ac08b0758b634a4952ec18bfcbe1",
-  "sourceDigest": "0662fbace090b11db315a5441448b9f0cd7eec59e4cc9f8edacf36e590d5ec87",
+  "observedAt": "2026-09-12T03:58:28.065Z",
+  "observationSourceRevision": "795d24001d1d7db8aeb9ebfe0865bbe275e0e990",
+  "sourceDigest": "d0c80fadafd62fe2c2aaac3a3f6181eba0c7316a2c6ef518125a86768348fecc",
   "reviewProfile": "manual-repository-playwright-chromium",
   "reviewIdentity": "fresh synthetic example.test accounts only",
   "browser": "Chromium from the repository Playwright installation",
@@ -160,12 +160,14 @@
   },
   "behavioralEvidence": {
     "completeManualObservation": {
-      "startedAt": "2026-09-11T17:24:18.036Z",
-      "completedAt": "2026-09-11T17:24:46.336Z",
+      "startedAt": "2026-09-12T03:57:58.291Z",
+      "completedAt": "2026-09-12T03:58:28.065Z",
       "passed": true,
       "wideSurfacesPassed": 14,
       "narrowSurfacesPassed": 14,
       "axeViolations": 0,
+      "unexpectedRequestFailures": 0,
+      "unexpectedHttpFailures": 0,
       "unexpectedConsoleErrors": 0,
       "pageExceptions": 0
     },
@@ -189,6 +191,29 @@
       "validationAlertRenderedAndFocused": true,
       "allowanceDisarmedAfterUse": true,
       "unrelatedHttpAndConsoleFailuresRemainFatal": true
+    },
+    "expectedSuccessfulNoContentTelemetry": {
+      "classification": "EXPECTED_SUCCESSFUL_NO_CONTENT_TELEMETRY",
+      "method": "DELETE",
+      "pathname": "/api/v1/me",
+      "dispatchCount": 1,
+      "serverTransactionCommitCount": 1,
+      "serverResponseStatus": 204,
+      "serverResponseFinished": true,
+      "proxyResponseFinished": true,
+      "applicationFetchFulfilled": true,
+      "applicationResponseStatus": 204,
+      "applicationResponseOk": true,
+      "applicationSuccessBranchExecuted": true,
+      "playwrightResponseStatus": 204,
+      "playwrightFailureText": "net::ERR_ABORTED",
+      "playwrightRequestFinishedObserved": false,
+      "accountDeletionCounterDelta": 1,
+      "finalRoute": "/login?deleted=1",
+      "deletedOwnedRecordsRemaining": 0,
+      "navigationCausedFailure": false,
+      "unexpectedRequestFailures": 0,
+      "genericMutationFailuresRemainFatal": true
     },
     "focusChecks": [
       "account-deletion validation error focused its alert",
