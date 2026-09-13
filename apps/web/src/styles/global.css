@@ -2377,6 +2377,42 @@ a {
   border-radius: 0.6rem;
 }
 
+.nav-menu__sign-out {
+  min-height: 2.75rem;
+  padding: 0.7rem 0.9rem;
+  color: var(--color-coral-deep);
+  background: transparent;
+  border: 0;
+  border-radius: 0.6rem;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-menu__sign-out:hover:not(:disabled),
+.nav-menu__sign-out:focus-visible {
+  background: var(--color-recovery-surface);
+}
+
+.nav-menu__sign-out:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.nav-menu__alert {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  color: var(--color-coral-deep);
+  background: var(--color-recovery-surface);
+  border: 1px solid currentColor;
+  border-radius: 0.6rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
 .workspace-page,
 .today-companion {
   display: grid;

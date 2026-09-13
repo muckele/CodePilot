@@ -13,6 +13,7 @@ import {
   AccountTodayRoute,
   AccountWorkspaceRoute
 } from "../features/account/AccountExperience";
+import { AccountSessionProvider } from "../features/account/AccountSessionContext";
 import { CurriculumPreviewPage } from "../features/curriculum/CurriculumPreviewPage";
 import { PrivacyPage, SupportPage, TermsPage } from "../features/policy/PolicyPages";
 import { WORKSPACE_PATHS } from "../features/workspace/WorkspaceExperience";
@@ -33,38 +34,48 @@ function CurriculumRoute() {
 function RoutedApplication() {
   const location = useLocation();
   const privateMode = location.pathname.startsWith("/app/") || location.pathname === "/admin";
+  const accountSessionEnabled =
+    privateMode ||
+    location.pathname === "/" ||
+    location.pathname === "/login" ||
+    location.pathname === "/register" ||
+    location.pathname === "/reset-password" ||
+    location.pathname === "/forgot-password" ||
+    location.pathname === "/login/email-code";
 
   return (
-    <AppShell
-      modeLabel={privateMode ? "Private mock-first workspace" : "Free local preview"}
-      privateMode={privateMode}
-    >
-      <Routes>
-        <Route path="curriculum/:requestedDay" element={<CurriculumRoute />} />
-        <Route path="privacy" element={<PrivacyPage />} />
-        <Route path="terms" element={<TermsPage />} />
-        <Route path="support" element={<SupportPage />} />
-        <Route element={<AccountExperience />}>
-          <Route index element={null} />
-          <Route path="register" element={<AccountAuthRoute mode="register" />} />
-          <Route path="login" element={<AccountAuthRoute mode="login" />} />
-          <Route path="reset-password" element={<AccountPasswordResetRoute />} />
-          <Route path="app/onboarding" element={<AccountOnboardingRoute />} />
-          <Route path="app/today" element={<AccountTodayRoute />} />
-          <Route path="app/account" element={<AccountSettingsRoute />} />
-          <Route path="app/account/delete" element={<AccountDeletionRoute />} />
-          {[...WORKSPACE_PATHS].map((workspacePath) => (
-            <Route
-              key={workspacePath}
-              path={workspacePath.slice(1)}
-              element={<AccountWorkspaceRoute pathname={workspacePath} />}
-            />
-          ))}
-          <Route path="app/*" element={<NotFoundPage />} />
-        </Route>
-        <Route path="*" element={<NotFoundPage />} />
-      </Routes>
-    </AppShell>
+    <AccountSessionProvider enabled={accountSessionEnabled}>
+      <AppShell
+        modeLabel={privateMode ? "Private mock-first workspace" : "Free local preview"}
+        privateMode={privateMode}
+      >
+        <Routes>
+          <Route path="curriculum/:requestedDay" element={<CurriculumRoute />} />
+          <Route path="privacy" element={<PrivacyPage />} />
+          <Route path="terms" element={<TermsPage />} />
+          <Route path="support" element={<SupportPage />} />
+          <Route element={<AccountExperience />}>
+            <Route index element={null} />
+            <Route path="register" element={<AccountAuthRoute mode="register" />} />
+            <Route path="login" element={<AccountAuthRoute mode="login" />} />
+            <Route path="reset-password" element={<AccountPasswordResetRoute />} />
+            <Route path="app/onboarding" element={<AccountOnboardingRoute />} />
+            <Route path="app/today" element={<AccountTodayRoute />} />
+            <Route path="app/account" element={<AccountSettingsRoute />} />
+            <Route path="app/account/delete" element={<AccountDeletionRoute />} />
+            {[...WORKSPACE_PATHS].map((workspacePath) => (
+              <Route
+                key={workspacePath}
+                path={workspacePath.slice(1)}
+                element={<AccountWorkspaceRoute pathname={workspacePath} />}
+              />
+            ))}
+            <Route path="app/*" element={<NotFoundPage />} />
+          </Route>
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+      </AppShell>
+    </AccountSessionProvider>
   );
 }
 

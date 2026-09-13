@@ -13,10 +13,7 @@ import {
   AccountApiError,
   deleteAccount,
   fetchAuthenticatedToday,
-  fetchCsrf,
-  fetchMe,
   loginAccount,
-  logoutAccount,
   registerAccount,
   resetPassword,
   saveOnboarding,
@@ -29,6 +26,7 @@ import {
   SCRATCH_MAX_LENGTH,
   writeScratch
 } from "./scratchStorage";
+import { type AccountSessionState, useAccountSession } from "./AccountSessionContext";
 import { ALLOWED_RETURN_PATHS, allowedReturnTo } from "../../app/navigation";
 import {
   DayTaskManager,
@@ -37,12 +35,7 @@ import {
 } from "../workspace/WorkspaceExperience";
 import { FocusOrbTimer, ParticleBurst } from "../workspace/components/SignatureGraphics";
 
-type SessionState =
-  | { status: "checking" }
-  | { status: "anonymous" }
-  | { status: "authenticated"; user: AccountUser }
-  | { status: "expired" }
-  | { status: "unavailable"; message: string; requestId: string | null };
+type SessionState = AccountSessionState;
 
 type MutationNotice =
   | { kind: "error"; message: string; requestId: string | null }
@@ -1396,16 +1389,13 @@ function AccountPage({
   user,
   csrfToken,
   onSaved,
-  onExpired,
-  onSignedOut
+  onExpired
 }: {
   user: AccountUser;
   csrfToken: string | null;
   onSaved: (user: AccountUser) => void;
   onExpired: () => void;
-  onSignedOut: () => void;
 }) {
-  const navigate = useNavigate();
   const [notice, setNotice] = useState<MutationNotice>(null);
   const [working, setWorking] = useState(false);
   const [profile, setProfile] = useState<OnboardingProfile>(() =>
@@ -1458,31 +1448,6 @@ function AccountPage({
         kind: "success",
         message: "Settings saved. Your next return will use these choices."
       });
-    } catch (error: unknown) {
-      if (error instanceof AccountApiError && error.isAuthenticationFailure) {
-        onExpired();
-        return;
-      }
-      setNotice(asNotice(error));
-    } finally {
-      setWorking(false);
-    }
-  }
-
-  async function signOut() {
-    if (csrfToken === null) {
-      setNotice({
-        kind: "error",
-        message: "Protection is still loading. The server session remains active.",
-        requestId: null
-      });
-      return;
-    }
-    setWorking(true);
-    try {
-      await logoutAccount(csrfToken);
-      onSignedOut();
-      navigate("/login", { replace: true });
     } catch (error: unknown) {
       if (error instanceof AccountApiError && error.isAuthenticationFailure) {
         onExpired();
@@ -1720,16 +1685,6 @@ function AccountPage({
         </button>
       </form>
 
-      <div className="button-row">
-        <button
-          className="button button--secondary"
-          type="button"
-          disabled={working}
-          onClick={signOut}
-        >
-          Sign out
-        </button>
-      </div>
       <div className="danger-zone">
         <h2>Export account data</h2>
         <p>
@@ -1849,89 +1804,11 @@ type AccountOutletContextValue = {
 export function AccountExperience() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [session, setSession] = useState<SessionState>({ status: "checking" });
-  const [csrfToken, setCsrfToken] = useState<string | null>(null);
-  const [bootstrapKey, setBootstrapKey] = useState(0);
+  const accountSession = useAccountSession();
+  const session = accountSession.state;
+  const csrfToken = accountSession.csrfToken;
   const [postAuthenticationPath, setPostAuthenticationPath] = useState<string | null>(null);
   const [postSessionDestination, setPostSessionDestination] = useState<string | null>(null);
-  const themePreference =
-    session.status === "authenticated"
-      ? (session.user.profile?.themePreference ?? "system")
-      : "system";
-  const motionPreference =
-    session.status === "authenticated"
-      ? (session.user.profile?.motionPreference ?? "system")
-      : "system";
-
-  useEffect(() => {
-    const root = document.documentElement;
-
-    if (themePreference === "system") {
-      delete root.dataset.theme;
-    } else {
-      root.dataset.theme = themePreference;
-    }
-
-    if (motionPreference === "system" || motionPreference === "gentle") {
-      delete root.dataset.motion;
-    } else {
-      root.dataset.motion = motionPreference;
-    }
-
-    return () => {
-      delete root.dataset.theme;
-      delete root.dataset.motion;
-    };
-  }, [motionPreference, themePreference]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setSession({ status: "checking" });
-    fetchMe(controller.signal)
-      .then((result) => {
-        setSession(
-          result.authenticated
-            ? { status: "authenticated", user: result.user }
-            : { status: "anonymous" }
-        );
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          return;
-        }
-        if (error instanceof AccountApiError && error.isAuthenticationFailure) {
-          setSession({ status: "expired" });
-          return;
-        }
-        setSession({
-          status: "unavailable",
-          message:
-            error instanceof AccountApiError
-              ? error.message
-              : "CodeLift could not verify the private workspace.",
-          requestId: error instanceof AccountApiError ? error.requestId : null
-        });
-      });
-    return () => controller.abort();
-  }, [bootstrapKey]);
-
-  useEffect(() => {
-    if (
-      session.status === "checking" ||
-      session.status === "unavailable" ||
-      session.status === "expired" ||
-      csrfToken !== null
-    ) {
-      return;
-    }
-    const controller = new AbortController();
-    fetchCsrf(controller.signal)
-      .then((result) => setCsrfToken(result.csrfToken))
-      .catch(() => {
-        // The individual form retains its entries and explains that protection is pending.
-      });
-    return () => controller.abort();
-  }, [csrfToken, session.status]);
 
   const pathname = location.pathname;
   const isDevelopmentAdminPath = import.meta.env.DEV && pathname === "/admin";
@@ -1954,26 +1831,32 @@ export function AccountExperience() {
   }
 
   const expireSession = useCallback(() => {
-    setCsrfToken(null);
-    setSession({ status: "expired" });
-  }, []);
+    accountSession.expireSession();
+  }, [accountSession.expireSession]);
 
-  const authenticate = useCallback((user: AccountUser, token: string, destination: string) => {
-    setPostAuthenticationPath(destination);
-    setSession({ status: "authenticated", user });
-    setCsrfToken(token);
-  }, []);
+  const authenticate = useCallback(
+    (user: AccountUser, token: string, destination: string) => {
+      setPostAuthenticationPath(destination);
+      accountSession.authenticate(user, token);
+    },
+    [accountSession.authenticate]
+  );
 
-  const updateUser = useCallback((user: AccountUser) => {
-    setSession({ status: "authenticated", user });
-  }, []);
+  const updateUser = useCallback(
+    (user: AccountUser) => {
+      accountSession.updateUser(user);
+    },
+    [accountSession.updateUser]
+  );
 
-  const clearSession = useCallback((destination?: string) => {
-    setPostAuthenticationPath(null);
-    setPostSessionDestination(destination ?? null);
-    setCsrfToken(null);
-    setSession({ status: "anonymous" });
-  }, []);
+  const clearSession = useCallback(
+    (destination?: string) => {
+      setPostAuthenticationPath(null);
+      setPostSessionDestination(destination ?? null);
+      accountSession.clearSession();
+    },
+    [accountSession.clearSession]
+  );
 
   useEffect(() => {
     if (postAuthenticationPath === pathname) {
@@ -1994,9 +1877,7 @@ export function AccountExperience() {
     return <CheckingWorkspace />;
   }
   if (session.status === "unavailable") {
-    return (
-      <UnavailableWorkspace state={session} retry={() => setBootstrapKey((value) => value + 1)} />
-    );
+    return <UnavailableWorkspace state={session} retry={accountSession.refresh} />;
   }
   if (session.status === "expired") {
     return (
@@ -2111,7 +1992,6 @@ export function AccountSettingsRoute() {
       csrfToken={context.csrfToken}
       onSaved={context.updateUser}
       onExpired={context.expireSession}
-      onSignedOut={context.clearSession}
     />
   );
 }
