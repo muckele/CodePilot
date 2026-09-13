@@ -1,7 +1,9 @@
 import { readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HTTP_LIMITS } from "@codelift/config";
+import { emailAddressSchema } from "@codelift/contracts";
 
 export type ApiEnvironment = "development" | "test" | "production";
 export type PersistenceMode = "optional" | "required";
@@ -25,6 +27,18 @@ export interface RegistrationConfig {
   readonly mode: RegistrationMode;
   readonly invitationTtlMs: number;
   readonly passwordResetTtlMs: number;
+}
+
+export type EmailProvider = "disabled" | "fake" | "resend";
+
+export interface EmailConfig {
+  readonly provider: EmailProvider;
+  readonly from: string | null;
+  readonly replyTo: string | null;
+  readonly requestTimeoutMs: number;
+  readonly resendApiKey: string | null;
+  readonly loginCodePepper: Buffer | null;
+  readonly fakeOutboxDir: string | null;
 }
 
 export type AiProvider = "mock" | "python_mock" | "openai" | "local";
@@ -52,6 +66,7 @@ export interface ApiConfig {
   readonly persistence: PersistenceConfig;
   readonly session: SessionConfig;
   readonly registration: RegistrationConfig;
+  readonly email: EmailConfig;
   readonly ai: AiConfig;
 }
 
@@ -158,24 +173,42 @@ function parseMongoUri(value: string | undefined): string | null {
   return candidate;
 }
 
+function readBoundedSingleLineSecretFile(options: {
+  path: string | undefined;
+  maximumBytes: number;
+  trimOuterWhitespace: boolean;
+  errorMessage: string;
+}): string {
+  try {
+    if (options.path === undefined || !isAbsolute(options.path)) throw new Error();
+    const stat = statSync(options.path);
+    if (!stat.isFile() || stat.size > options.maximumBytes) throw new Error();
+    const raw = readFileSync(options.path, "utf8");
+    const value = options.trimOuterWhitespace
+      ? raw.trim()
+      : raw.endsWith("\n")
+        ? raw.slice(0, -1)
+        : raw;
+    if (value === "" || value.includes("\n") || value.includes("\r")) throw new Error();
+    return value;
+  } catch {
+    throw new Error(options.errorMessage);
+  }
+}
+
 function mongoUriInput(environment: NodeJS.ProcessEnv): string | undefined {
   const path = environment.MONGO_URI_FILE;
   if (path === undefined) return environment.MONGO_URI;
   if (environment.MONGO_URI !== undefined) {
     throw new Error("Set only one of MONGO_URI and MONGO_URI_FILE.");
   }
-  try {
-    if (!isAbsolute(path)) throw new Error();
-    const stat = statSync(path);
-    if (!stat.isFile() || stat.size > 8_192) throw new Error();
-    const value = readFileSync(path, "utf8").trim();
-    if (value === "" || value.includes("\n") || value.includes("\r")) throw new Error();
-    return value;
-  } catch {
-    throw new Error(
+  return readBoundedSingleLineSecretFile({
+    path,
+    maximumBytes: 8_192,
+    trimOuterWhitespace: true,
+    errorMessage:
       "MONGO_URI_FILE must be an absolute, readable, nonempty secret file of at most 8192 bytes."
-    );
-  }
+  });
 }
 
 function parseDatabaseName(value: string | undefined): string {
@@ -231,6 +264,143 @@ function createRegistrationConfig(
     mode: parseRegistrationMode(environment.REGISTRATION_MODE, nodeEnv),
     invitationTtlMs: 7 * 24 * 60 * 60 * 1_000,
     passwordResetTtlMs: 60 * 60 * 1_000
+  };
+}
+
+function parseEmailProvider(value: string | undefined): EmailProvider {
+  const candidate = value ?? "disabled";
+  if (candidate !== "disabled" && candidate !== "fake" && candidate !== "resend") {
+    throw new Error("EMAIL_PROVIDER must be disabled, fake, or resend.");
+  }
+  return candidate;
+}
+
+function readEmailSecretFile(
+  path: string | undefined,
+  name: "RESEND_API_KEY_FILE" | "EMAIL_LOGIN_CODE_PEPPER_FILE"
+): string {
+  return readBoundedSingleLineSecretFile({
+    path,
+    maximumBytes: 1_024,
+    trimOuterWhitespace: false,
+    errorMessage: `${name} must be an absolute, readable, bounded, single-line secret file.`
+  });
+}
+
+function parseMailbox(value: string | undefined, name: "EMAIL_FROM" | "EMAIL_REPLY_TO"): string {
+  const parsed = emailAddressSchema.safeParse(value);
+  if (!parsed.success || parsed.data !== value) {
+    throw new Error(`${name} must be one normalized bare mailbox address.`);
+  }
+  return parsed.data;
+}
+
+function parseFakeOutboxDir(
+  value: string | undefined,
+  provider: EmailProvider,
+  nodeEnv: ApiEnvironment
+): string | null {
+  if (value === undefined) return null;
+  if (provider !== "fake" || nodeEnv !== "test" || !isAbsolute(value)) {
+    throw new Error("EMAIL_FAKE_OUTBOX_DIR is permitted only for the test fake provider.");
+  }
+  const resolved = resolve(value);
+  const relativeToTemporaryRoot = relative(resolve(tmpdir()), resolved);
+  if (
+    relativeToTemporaryRoot === "" ||
+    relativeToTemporaryRoot === ".." ||
+    relativeToTemporaryRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    isAbsolute(relativeToTemporaryRoot)
+  ) {
+    throw new Error(
+      "EMAIL_FAKE_OUTBOX_DIR must be an absolute path under the temporary directory."
+    );
+  }
+  return resolved;
+}
+
+function parseResendKey(path: string | undefined): string {
+  const value = readEmailSecretFile(path, "RESEND_API_KEY_FILE");
+  if (value.length < 16 || value.length > 512 || !/^re_[\x21-\x7e]+$/.test(value)) {
+    throw new Error(
+      "RESEND_API_KEY_FILE must contain one 16 to 512 byte ASCII value beginning with re_."
+    );
+  }
+  return value;
+}
+
+function parseLoginCodePepper(path: string | undefined): Buffer {
+  const value = readEmailSecretFile(path, "EMAIL_LOGIN_CODE_PEPPER_FILE");
+  if (!/^[A-Za-z0-9_-]{43}$/.test(value)) {
+    throw new Error(
+      "EMAIL_LOGIN_CODE_PEPPER_FILE must contain base64url for exactly 32 random bytes."
+    );
+  }
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.length !== 32 || decoded.toString("base64url") !== value) {
+    throw new Error(
+      "EMAIL_LOGIN_CODE_PEPPER_FILE must contain base64url for exactly 32 random bytes."
+    );
+  }
+  return decoded;
+}
+
+function createEmailConfig(environment: NodeJS.ProcessEnv, nodeEnv: ApiEnvironment): EmailConfig {
+  if (environment.RESEND_API_KEY !== undefined) {
+    throw new Error("RESEND_API_KEY is unsupported; use RESEND_API_KEY_FILE.");
+  }
+  if (environment.EMAIL_LOGIN_CODE_PEPPER !== undefined) {
+    throw new Error("EMAIL_LOGIN_CODE_PEPPER is unsupported; use EMAIL_LOGIN_CODE_PEPPER_FILE.");
+  }
+
+  const provider = parseEmailProvider(environment.EMAIL_PROVIDER);
+  if (provider === "fake" && nodeEnv === "production") {
+    throw new Error("EMAIL_PROVIDER=fake is forbidden in production.");
+  }
+  const requestTimeoutMs = parseBoundedInteger(
+    environment.EMAIL_REQUEST_TIMEOUT_MS,
+    5_000,
+    1_000,
+    10_000,
+    "EMAIL_REQUEST_TIMEOUT_MS"
+  );
+  const fakeOutboxDir = parseFakeOutboxDir(environment.EMAIL_FAKE_OUTBOX_DIR, provider, nodeEnv);
+
+  if (provider === "disabled") {
+    return {
+      provider,
+      from: null,
+      replyTo: null,
+      requestTimeoutMs,
+      resendApiKey: null,
+      loginCodePepper: null,
+      fakeOutboxDir
+    };
+  }
+
+  if (provider === "fake") {
+    return {
+      provider,
+      from: null,
+      replyTo: null,
+      requestTimeoutMs,
+      resendApiKey: null,
+      loginCodePepper: Buffer.alloc(32, 0xa5),
+      fakeOutboxDir
+    };
+  }
+
+  return {
+    provider,
+    from: parseMailbox(environment.EMAIL_FROM, "EMAIL_FROM"),
+    replyTo:
+      environment.EMAIL_REPLY_TO === undefined
+        ? null
+        : parseMailbox(environment.EMAIL_REPLY_TO, "EMAIL_REPLY_TO"),
+    requestTimeoutMs,
+    resendApiKey: parseResendKey(environment.RESEND_API_KEY_FILE),
+    loginCodePepper: parseLoginCodePepper(environment.EMAIL_LOGIN_CODE_PEPPER_FILE),
+    fakeOutboxDir
   };
 }
 
@@ -390,6 +560,7 @@ export function loadApiConfig(environment: NodeJS.ProcessEnv = process.env): Api
     },
     session: createSessionConfig(nodeEnv),
     registration: createRegistrationConfig(environment, nodeEnv),
+    email: createEmailConfig(environment, nodeEnv),
     ai: createAiConfig(environment, nodeEnv)
   };
 }

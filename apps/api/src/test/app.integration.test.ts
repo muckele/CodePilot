@@ -172,6 +172,15 @@ function testConfig(curriculumPath: string, nodeEnv: ApiConfig["nodeEnv"] = "tes
       invitationTtlMs: 7 * 24 * 60 * 60 * 1_000,
       passwordResetTtlMs: 60 * 60 * 1_000
     },
+    email: {
+      provider: "disabled",
+      from: null,
+      replyTo: null,
+      requestTimeoutMs: 5_000,
+      resendApiKey: null,
+      loginCodePepper: null,
+      fakeOutboxDir: null
+    },
     ai: {
       provider: "mock",
       pythonBaseUrl: "http://127.0.0.1:8000",
@@ -206,6 +215,46 @@ describe("M1 API integration", () => {
       service: "api"
     });
     expect(response.body).not.toHaveProperty("curriculum");
+  });
+
+  it("reports only the public self-service email capability in MVP configuration", async () => {
+    const response = await request(app).get("/api/v1/config");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      registrationMode: "open",
+      aiProvider: "mock",
+      externalAiEnabled: false,
+      agentEnabled: false,
+      emailSelfServiceEnabled: false
+    });
+    expect(response.body).not.toHaveProperty("provider");
+    expect(response.body).not.toHaveProperty("from");
+    expect(response.body).not.toHaveProperty("requestTimeoutMs");
+
+    const enabled = await bootstrapApi({
+      config: {
+        ...testConfig(canonicalCurriculumPath),
+        email: {
+          provider: "fake",
+          from: null,
+          replyTo: null,
+          requestTimeoutMs: 5_000,
+          resendApiKey: null,
+          loginCodePepper: Buffer.alloc(32, 0xa5),
+          fakeOutboxDir: null
+        }
+      },
+      logger: silentLogger
+    });
+    try {
+      const enabledResponse = await request(enabled.app).get("/api/v1/config");
+      expect(enabledResponse.status).toBe(200);
+      expect(enabledResponse.body.emailSelfServiceEnabled).toBe(true);
+      expect(enabledResponse.body).not.toHaveProperty("provider");
+    } finally {
+      await enabled.close();
+    }
   });
 
   it("reports honest degraded readiness when curriculum is valid but Mongo is optional", async () => {

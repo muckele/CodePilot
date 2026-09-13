@@ -210,7 +210,8 @@ export function createAccountRouter(options: {
         registrationMode: options.config.registration.mode,
         aiProvider: options.config.ai.provider,
         externalAiEnabled: options.config.ai.externalEnabled,
-        agentEnabled: options.config.ai.agentEnabled
+        agentEnabled: options.config.ai.agentEnabled,
+        emailSelfServiceEnabled: options.config.email.provider !== "disabled"
       })
     );
   });

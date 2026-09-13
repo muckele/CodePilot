@@ -75,6 +75,15 @@ function configFor(
       invitationTtlMs: 7 * 24 * 60 * 60 * 1_000,
       passwordResetTtlMs: 60 * 60 * 1_000
     },
+    email: {
+      provider: "disabled",
+      from: null,
+      replyTo: null,
+      requestTimeoutMs: 5_000,
+      resendApiKey: null,
+      loginCodePepper: null,
+      fakeOutboxDir: null
+    },
     ai: {
       provider: "mock",
       pythonBaseUrl: "http://127.0.0.1:8000",
