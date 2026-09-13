@@ -192,3 +192,7 @@ export function useAccountSession(): AccountSessionValue {
   }
   return value;
 }
+
+export function useOptionalAccountSession(): AccountSessionValue | null {
+  return useContext(AccountSessionContext);
+}

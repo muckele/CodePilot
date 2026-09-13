@@ -1,7 +1,7 @@
 import { type PropsWithChildren, useEffect, useRef, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
 
-import { useAccountSession } from "../features/account/AccountSessionContext";
+import { useOptionalAccountSession } from "../features/account/AccountSessionContext";
 import { AccountApiError } from "../features/account/api/accountApi";
 
 type AppShellProps = PropsWithChildren<{
@@ -17,7 +17,7 @@ export function AppShell({
   developmentMode = import.meta.env.DEV
 }: AppShellProps) {
   const navigate = useNavigate();
-  const accountSession = useAccountSession();
+  const accountSession = useOptionalAccountSession();
   const [signOutPending, setSignOutPending] = useState(false);
   const [signOutFailure, setSignOutFailure] = useState<{
     message: string;
@@ -30,7 +30,7 @@ export function AppShell({
   }, [signOutFailure]);
 
   async function signOut() {
-    if (signOutPending) return;
+    if (signOutPending || accountSession === null) return;
     setSignOutPending(true);
     setSignOutFailure(null);
     try {
@@ -115,7 +115,7 @@ export function AppShell({
                     {label}
                   </NavLink>
                 ))}
-                {accountSession.status === "authenticated" ? (
+                {accountSession?.status === "authenticated" ? (
                   <>
                     <button
                       className="nav-menu__sign-out"
