@@ -2,6 +2,8 @@ import {
   authSessionResponseSchema,
   csrfResponseSchema,
   deleteAccountRequestSchema,
+  emailLoginCodeRequestResponseSchema,
+  emailLoginCodeRequestSchema,
   loginRequestSchema,
   meResponseSchema,
   mvpConfigurationResponseSchema,
@@ -55,6 +57,21 @@ const defaultEmailRequestTiming: EmailRequestTiming = {
   nowMs: () => performance.now(),
   sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 };
+
+async function withPublicEmailResponseFloor(
+  timing: EmailRequestTiming,
+  operation: () => Promise<void>
+): Promise<void> {
+  const startedAt = timing.nowMs();
+  try {
+    await operation();
+  } finally {
+    const remaining = 750 - (timing.nowMs() - startedAt);
+    if (remaining > 0) {
+      await timing.sleep(remaining);
+    }
+  }
+}
 
 function asyncHandler(handler: AsyncHandler) {
   return (request: Request, response: Response, next: NextFunction): void => {
@@ -304,6 +321,20 @@ export function createAccountRouter(options: {
       });
     }
   });
+  const emailCodeRequestLimiter = rateLimit({
+    windowMs: 15 * 60 * 1_000,
+    limit: 5,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler(_request, response) {
+      sendProblem(response, {
+        type: "https://codelift.ai/problems/rate-limit-exceeded",
+        title: "Too many attempts",
+        status: 429,
+        detail: "Wait before requesting another sign-in code."
+      });
+    }
+  });
   const mutationLimiter = rateLimit({
     windowMs: 60 * 1_000,
     limit: 120,
@@ -405,8 +436,7 @@ export function createAccountRouter(options: {
         });
       }
 
-      const startedAt = emailRequestTiming.nowMs();
-      try {
+      await withPublicEmailResponseFloor(emailRequestTiming, async () => {
         await service.recordPilotEventBestEffort("password_reset_requested");
         const issued = await service.issueSelfServicePasswordReset(input.email);
         if (issued.kind === "issued") {
@@ -438,16 +468,64 @@ export function createAccountRouter(options: {
             await service.recordPilotEventBestEffort("password_reset_email_failed");
           }
         }
-      } finally {
-        const remaining = 750 - (emailRequestTiming.nowMs() - startedAt);
-        if (remaining > 0) {
-          await emailRequestTiming.sleep(remaining);
-        }
-      }
+      });
 
       response.status(202).json(
         passwordResetEmailResponseSchema.parse({
           message: "If an account exists for that email, we sent a password-reset link."
+        })
+      );
+    })
+  );
+
+  router.post(
+    "/auth/email-code/request",
+    emailCodeRequestLimiter,
+    asyncHandler(async (request, response) => {
+      await verifiedIdentity(request);
+      const input = parseBody(emailLoginCodeRequestSchema, request.body);
+      if (options.config.email.provider === "disabled") {
+        throw new HttpProblem({
+          type: "https://codelift.ai/problems/email-self-service-unavailable",
+          title: "Email account access unavailable",
+          status: 503,
+          detail: "Email account access is not enabled. Use the operator recovery path."
+        });
+      }
+
+      await withPublicEmailResponseFloor(emailRequestTiming, async () => {
+        await service.recordPilotEventBestEffort("email_login_code_requested");
+        const issued = await service.issueEmailLoginCode(input.email);
+        if (issued.kind === "issued") {
+          let delivered = false;
+          try {
+            await options.runtime.emailProvider.sendLoginCode({
+              to: issued.email,
+              code: issued.code,
+              expiresAt: issued.expiresAt,
+              idempotencyKey: opaqueProviderIdempotencyKey("email-login-code", issued.id)
+            });
+            delivered = await service.acknowledgeEmailLoginCodeDelivery(issued.id);
+          } catch {
+            delivered = false;
+          }
+
+          if (!delivered) {
+            try {
+              await service.revokeEmailLoginCodeDelivery(issued.id);
+            } catch {
+              // Verification remains delivery-gated; the public result stays generic.
+            }
+          }
+          await service.recordPilotEventBestEffort(
+            delivered ? "email_login_code_email_sent" : "email_login_code_email_failed"
+          );
+        }
+      });
+
+      response.status(202).json(
+        emailLoginCodeRequestResponseSchema.parse({
+          message: "If an account exists for that email, we sent a sign-in code."
         })
       );
     })

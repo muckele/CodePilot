@@ -2,6 +2,7 @@ import {
   accountUserSchema,
   accountExportSchema,
   authenticatedTodayResponseSchema,
+  emailAddressSchema,
   onboardingProfileSchema,
   progressDayResponseSchema,
   type AccountUser,
@@ -14,7 +15,7 @@ import {
   type ProgressReflectionRequest,
   type ProgressStatusRequest
 } from "@codelift/contracts";
-import type { ClientSession, HydratedDocument, Types } from "mongoose";
+import { Types, type ClientSession, type HydratedDocument } from "mongoose";
 
 import type { RegistrationConfig, SessionConfig } from "../config.js";
 import type { CurriculumRuntime } from "../curriculum/runtime.js";
@@ -32,6 +33,7 @@ import {
   issueSelfServicePasswordReset,
   type SelfServicePasswordResetResult
 } from "./access-operator.js";
+import { digestLoginCode, generateLoginCode } from "./email-login-code.js";
 import {
   createDummyPasswordHash,
   createOpaqueToken,
@@ -60,6 +62,17 @@ export interface IssuedSession {
 export interface AuthResult extends IssuedSession {
   readonly user: AccountUser;
 }
+
+export type EmailLoginCodeIssueResult =
+  | {
+      readonly kind: "issued";
+      readonly id: string;
+      readonly email: string;
+      readonly code: string;
+      readonly expiresAt: Date;
+    }
+  | { readonly kind: "missing_account" }
+  | { readonly kind: "cooldown" };
 
 const terminalStatuses = ["core_completed", "recovery_completed", "intentionally_skipped"] as const;
 
@@ -305,6 +318,7 @@ export class AccountService {
   readonly #sessionConfig: SessionConfig;
   readonly #registrationConfig: RegistrationConfig;
   readonly #dummyPasswordHash: string;
+  readonly #loginCodePepper: Buffer | null;
   readonly #now: () => Date;
 
   private constructor(options: {
@@ -313,6 +327,7 @@ export class AccountService {
     sessionConfig: SessionConfig;
     registrationConfig: RegistrationConfig;
     dummyPasswordHash: string;
+    loginCodePepper?: Buffer | null;
     now?: () => Date;
   }) {
     this.#models = options.models;
@@ -320,6 +335,10 @@ export class AccountService {
     this.#sessionConfig = options.sessionConfig;
     this.#registrationConfig = options.registrationConfig;
     this.#dummyPasswordHash = options.dummyPasswordHash;
+    this.#loginCodePepper =
+      options.loginCodePepper === undefined || options.loginCodePepper === null
+        ? null
+        : Buffer.from(options.loginCodePepper);
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -328,6 +347,7 @@ export class AccountService {
     curriculum: CurriculumRuntime;
     sessionConfig: SessionConfig;
     registrationConfig: RegistrationConfig;
+    loginCodePepper?: Buffer | null;
     now?: () => Date;
   }): Promise<AccountService> {
     const dummyPasswordHash = await createDummyPasswordHash();
@@ -718,6 +738,125 @@ export class AccountService {
       {
         _id: resetId,
         deliveryMethod: "email",
+        consumedAt: null,
+        revokedAt: null
+      },
+      { $set: { revokedAt: this.#now() } }
+    );
+  }
+
+  async issueEmailLoginCode(emailInput: string): Promise<EmailLoginCodeIssueResult> {
+    if (this.#loginCodePepper === null) {
+      throw new Error("Email login-code issuance requires configured HMAC key material.");
+    }
+    const email = emailAddressSchema.parse(emailInput);
+    const now = this.#now();
+    const code = generateLoginCode();
+    const codeId = new Types.ObjectId();
+    const codeDigest = digestLoginCode({
+      pepper: this.#loginCodePepper,
+      recordIdHex: codeId.toString(),
+      code
+    });
+    const expiresAt = new Date(now.getTime() + 10 * 60 * 1_000);
+    const cooldownBoundary = new Date(now.getTime() - 60_000);
+    const databaseSession = await this.#models.User.db.startSession();
+    let result: EmailLoginCodeIssueResult = { kind: "missing_account" };
+
+    try {
+      await databaseSession.withTransaction(async () => {
+        const user = await this.#models.User.findOneAndUpdate(
+          { email },
+          { $inc: { writeFence: 1 } },
+          { session: databaseSession, returnDocument: "after" }
+        );
+        if (user === null) {
+          result = { kind: "missing_account" };
+          return;
+        }
+
+        const recentActive = await this.#models.EmailLoginCode.findOne(
+          {
+            userId: user._id,
+            purpose: "email_login",
+            createdAt: { $gt: cooldownBoundary },
+            consumedAt: null,
+            revokedAt: null
+          },
+          null,
+          { session: databaseSession }
+        );
+        if (recentActive !== null) {
+          result = { kind: "cooldown" };
+          return;
+        }
+
+        await this.#models.EmailLoginCode.updateMany(
+          {
+            userId: user._id,
+            purpose: "email_login",
+            consumedAt: null,
+            revokedAt: null
+          },
+          { $set: { revokedAt: now } },
+          { session: databaseSession }
+        );
+        const [created] = await this.#models.EmailLoginCode.create(
+          [
+            {
+              _id: codeId,
+              userId: user._id,
+              purpose: "email_login",
+              codeDigest,
+              expiresAt,
+              sentAt: null,
+              consumedAt: null,
+              revokedAt: null,
+              failedAttempts: 0,
+              createdAt: now
+            }
+          ],
+          { session: databaseSession }
+        );
+        if (created === undefined) {
+          throw new Error("Email login-code creation returned no record.");
+        }
+        result = {
+          kind: "issued",
+          id: created._id.toString(),
+          email,
+          code,
+          expiresAt
+        };
+      });
+    } finally {
+      await databaseSession.endSession();
+    }
+
+    return result;
+  }
+
+  async acknowledgeEmailLoginCodeDelivery(codeId: string): Promise<boolean> {
+    const now = this.#now();
+    const result = await this.#models.EmailLoginCode.updateOne(
+      {
+        _id: codeId,
+        purpose: "email_login",
+        sentAt: null,
+        expiresAt: { $gt: now },
+        consumedAt: null,
+        revokedAt: null
+      },
+      { $set: { sentAt: now } }
+    );
+    return result.modifiedCount === 1;
+  }
+
+  async revokeEmailLoginCodeDelivery(codeId: string): Promise<void> {
+    await this.#models.EmailLoginCode.updateOne(
+      {
+        _id: codeId,
+        purpose: "email_login",
         consumedAt: null,
         revokedAt: null
       },

@@ -50,6 +50,7 @@ export async function bootstrapApi(options: BootstrapApiOptions): Promise<Bootst
     curriculum,
     sessionConfig: options.config.session,
     registrationConfig: options.config.registration,
+    loginCodePepper: options.config.email.loginCodePepper,
     aiConfig: options.config.ai,
     emailProvider
   });
