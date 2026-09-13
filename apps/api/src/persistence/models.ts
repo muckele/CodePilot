@@ -45,12 +45,38 @@ export interface PasswordResetRecord {
   consumedAt: Date | null;
   revokedAt: Date | null;
   createdBy: string;
+  deliveryMethod?: "email" | "operator";
+  sentAt?: Date | null;
   createdAt: Date;
 }
 
+export interface EmailLoginCodeRecord {
+  userId: Types.ObjectId;
+  purpose: "email_login";
+  codeDigest: string;
+  expiresAt: Date;
+  sentAt: Date | null;
+  consumedAt: Date | null;
+  revokedAt: Date | null;
+  failedAttempts: number;
+  createdAt: Date;
+}
+
+export type PilotAggregateEvent =
+  | "account_export_succeeded"
+  | "account_deletion_succeeded"
+  | "password_reset_requested"
+  | "password_reset_email_sent"
+  | "password_reset_email_failed"
+  | "email_login_code_requested"
+  | "email_login_code_email_sent"
+  | "email_login_code_email_failed"
+  | "email_login_code_succeeded"
+  | "email_login_code_failed";
+
 export interface PilotAggregateRecord {
   date: string;
-  event: "account_export_succeeded" | "account_deletion_succeeded";
+  event: PilotAggregateEvent;
   count: number;
   expiresAt: Date;
   createdAt: Date;
@@ -129,6 +155,7 @@ export interface CodeLiftModels extends ProductModels {
   readonly Session: Model<SessionRecord>;
   readonly Invitation: Model<InvitationRecord>;
   readonly PasswordReset: Model<PasswordResetRecord>;
+  readonly EmailLoginCode: Model<EmailLoginCodeRecord>;
   readonly PilotAggregate: Model<PilotAggregateRecord>;
   readonly UserActivity: Model<UserActivityRecord>;
   readonly Progress: Model<ProgressRecord>;
@@ -287,11 +314,38 @@ const passwordResetSchema = new Schema<PasswordResetRecord>(
     expiresAt: { type: Date, required: true },
     consumedAt: { type: Date, default: null },
     revokedAt: { type: Date, default: null },
-    createdBy: { type: String, required: true, maxlength: 80 }
+    createdBy: { type: String, required: true, maxlength: 80 },
+    deliveryMethod: {
+      type: String,
+      required: false,
+      enum: ["email", "operator"]
+    },
+    sentAt: { type: Date, required: false }
   },
   { timestamps: { createdAt: true, updatedAt: false }, strict: "throw", versionKey: false }
 );
 passwordResetSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60 });
+
+const emailLoginCodeSchema = new Schema<EmailLoginCodeRecord>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    purpose: { type: String, required: true, enum: ["email_login"] },
+    codeDigest: {
+      type: String,
+      required: true,
+      match: /^[0-9a-f]{64}$/,
+      select: false
+    },
+    expiresAt: { type: Date, required: true },
+    sentAt: { type: Date, default: null },
+    consumedAt: { type: Date, default: null },
+    revokedAt: { type: Date, default: null },
+    failedAttempts: { type: Number, required: true, default: 0, min: 0, max: 5 }
+  },
+  { timestamps: { createdAt: true, updatedAt: false }, strict: "throw", versionKey: false }
+);
+emailLoginCodeSchema.index({ userId: 1, purpose: 1, createdAt: -1 });
+emailLoginCodeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60 });
 
 const pilotAggregateSchema = new Schema<PilotAggregateRecord>(
   {
@@ -299,7 +353,18 @@ const pilotAggregateSchema = new Schema<PilotAggregateRecord>(
     event: {
       type: String,
       required: true,
-      enum: ["account_export_succeeded", "account_deletion_succeeded"]
+      enum: [
+        "account_export_succeeded",
+        "account_deletion_succeeded",
+        "password_reset_requested",
+        "password_reset_email_sent",
+        "password_reset_email_failed",
+        "email_login_code_requested",
+        "email_login_code_email_sent",
+        "email_login_code_email_failed",
+        "email_login_code_succeeded",
+        "email_login_code_failed"
+      ]
     },
     count: { type: Number, required: true, min: 0 },
     expiresAt: {
@@ -518,6 +583,7 @@ export function createModels(connection: Connection): CodeLiftModels {
     Session: connection.model<SessionRecord>("Session", sessionSchema),
     Invitation: connection.model<InvitationRecord>("Invitation", invitationSchema),
     PasswordReset: connection.model<PasswordResetRecord>("PasswordReset", passwordResetSchema),
+    EmailLoginCode: connection.model<EmailLoginCodeRecord>("EmailLoginCode", emailLoginCodeSchema),
     PilotAggregate: connection.model<PilotAggregateRecord>("PilotAggregate", pilotAggregateSchema),
     UserActivity: connection.model<UserActivityRecord>("UserActivity", userActivitySchema),
     Progress: connection.model<ProgressRecord>("ProgressLog", progressSchema),

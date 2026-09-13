@@ -5,6 +5,7 @@ import type {
   ProgressDayResponse
 } from "@codelift/contracts";
 import { fileURLToPath } from "node:url";
+import { Types } from "mongoose";
 import request, { type Agent } from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -186,6 +187,7 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
       runtime.persistence.models.Session.deleteMany({}),
       runtime.persistence.models.Invitation.deleteMany({}),
       runtime.persistence.models.PasswordReset.deleteMany({}),
+      runtime.persistence.models.EmailLoginCode.deleteMany({}),
       runtime.persistence.models.User.deleteMany({}),
       runtime.persistence.models.XpEvent.deleteMany({}),
       runtime.persistence.models.UserAchievement.deleteMany({}),
@@ -213,6 +215,59 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
       await runtime.persistence.connection.dropDatabase();
     }
     await runtime.close();
+  });
+
+  it("initializes email-code indexes idempotently without rewriting v0.1 reset records", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const userId = new Types.ObjectId();
+    const legacyResetId = new Types.ObjectId();
+    await models.PasswordReset.collection.insertOne({
+      _id: legacyResetId,
+      tokenHash: "a".repeat(64),
+      purpose: "password_reset",
+      userId,
+      expiresAt: new Date("2026-09-13T06:00:00.000Z"),
+      consumedAt: null,
+      revokedAt: null,
+      createdBy: "v0.1-fixture",
+      createdAt: new Date("2026-09-13T05:00:00.000Z")
+    });
+    const loginCode = await models.EmailLoginCode.create({
+      userId,
+      purpose: "email_login",
+      codeDigest: "b".repeat(64),
+      expiresAt: new Date("2026-09-13T05:10:00.000Z"),
+      sentAt: null,
+      consumedAt: null,
+      revokedAt: null,
+      failedAttempts: 0
+    });
+
+    await models.EmailLoginCode.init();
+    await models.EmailLoginCode.createIndexes();
+    const indexes = await models.EmailLoginCode.collection.indexes();
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: { userId: 1, purpose: 1, createdAt: -1 } }),
+        expect.objectContaining({
+          key: { expiresAt: 1 },
+          expireAfterSeconds: 7 * 24 * 60 * 60
+        })
+      ])
+    );
+    expect(await models.EmailLoginCode.findById(loginCode._id).lean()).not.toHaveProperty(
+      "codeDigest"
+    );
+    expect(
+      (await models.EmailLoginCode.findById(loginCode._id).select("+codeDigest").lean())?.codeDigest
+    ).toBe("b".repeat(64));
+
+    const legacyReset = await models.PasswordReset.collection.findOne({ _id: legacyResetId });
+    expect(legacyReset).not.toHaveProperty("deliveryMethod");
+    expect(legacyReset).not.toHaveProperty("sentAt");
   });
 
   it("atomically gates invitations and resets passwords without token storage, replay, or surviving sessions", async () => {

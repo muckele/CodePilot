@@ -21,6 +21,7 @@ import type { CurriculumRuntime } from "../curriculum/runtime.js";
 import { HttpProblem } from "../http/problem.js";
 import type {
   CodeLiftModels,
+  PilotAggregateEvent,
   ProgressRecord,
   ReflectionRecord,
   SessionRecord,
@@ -851,9 +852,7 @@ export class AccountService {
     });
   }
 
-  async recordPilotEvent(
-    event: "account_export_succeeded" | "account_deletion_succeeded"
-  ): Promise<void> {
+  async recordPilotEvent(event: PilotAggregateEvent): Promise<void> {
     await this.#models.PilotAggregate.updateOne(
       { date: this.#now().toISOString().slice(0, 10), event },
       { $inc: { count: 1 } },
