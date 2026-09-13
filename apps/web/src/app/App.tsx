@@ -6,7 +6,9 @@ import { NotFoundPage } from "../components/NotFoundPage";
 import {
   AccountAuthRoute,
   AccountDeletionRoute,
+  AccountEmailCodeRoute,
   AccountExperience,
+  AccountForgotPasswordRoute,
   AccountOnboardingRoute,
   AccountPasswordResetRoute,
   AccountSettingsRoute,
@@ -58,6 +60,8 @@ function RoutedApplication() {
             <Route index element={null} />
             <Route path="register" element={<AccountAuthRoute mode="register" />} />
             <Route path="login" element={<AccountAuthRoute mode="login" />} />
+            <Route path="login/email-code" element={<AccountEmailCodeRoute />} />
+            <Route path="forgot-password" element={<AccountForgotPasswordRoute />} />
             <Route path="reset-password" element={<AccountPasswordResetRoute />} />
             <Route path="app/onboarding" element={<AccountOnboardingRoute />} />
             <Route path="app/today" element={<AccountTodayRoute />} />
