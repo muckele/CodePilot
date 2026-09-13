@@ -13,7 +13,7 @@
     "seed:validate": "tsx src/seed/cli.ts validate",
     "operator:access": "tsx src/account/operator-cli.ts",
     "mvp:metrics": "tsx src/metrics/cli.ts",
-    "test": "vitest run src/test/config.test.ts src/test/learning.test.ts src/test/planner-graph.test.ts src/test/persistence-runtime.test.ts",
+    "test": "vitest run src/test/account-models.test.ts src/test/config.test.ts src/test/email-login-code.test.ts src/test/learning.test.ts src/test/operator-environment.test.ts src/test/planner-graph.test.ts src/test/persistence-runtime.test.ts src/test/transactional-email.test.ts",
     "test:integration": "NODE_ENV=test REGISTRATION_MODE=open MONGO_TEST_URI='mongodb://127.0.0.1:27018/codelift_m2_test?replicaSet=rs0&directConnection=true' vitest run src/test/app.integration.test.ts src/test/m2.mongo.integration.test.ts src/test/security-regressions.mongo.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
