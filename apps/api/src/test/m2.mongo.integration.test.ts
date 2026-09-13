@@ -489,7 +489,7 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
         .set("Origin", webOrigin)
         .set("X-CSRF-Token", retryProtection.csrfToken)
         .send({ email });
-      expect(retry.status).toBe(202);
+      expect(retry.status, JSON.stringify(retry.body)).toBe(202);
       expect(provider.messages).toHaveLength(2);
       expect(
         await models.PasswordReset.countDocuments({
@@ -1439,6 +1439,53 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
     ).toBe(1);
   });
 
+  it("replaces an unacknowledged sign-in-code orphan after its delivery lease expires", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const provider = new FakeTransactionalEmailProvider();
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const email = "orphaned-email-code@example.com";
+    const registered = await register(request.agent(emailApp), email);
+    const orphanId = new Types.ObjectId();
+    const now = new Date();
+    await models.EmailLoginCode.collection.insertOne({
+      _id: orphanId,
+      userId: new Types.ObjectId(registered.user.id),
+      purpose: "email_login",
+      codeDigest: "a".repeat(64),
+      expiresAt: new Date(now.getTime() + 10 * 60_000),
+      deliveryLeaseExpiresAt: new Date(now.getTime() - 1_000),
+      sentAt: null,
+      consumedAt: null,
+      revokedAt: null,
+      failedAttempts: 0,
+      createdAt: now
+    });
+
+    const browser = request.agent(emailApp);
+    const protection = await csrf(browser);
+    const response = await browser
+      .post("/api/v1/auth/email-code/request")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", protection.csrfToken)
+      .send({ email });
+
+    expect(response.status).toBe(202);
+    expect(provider.messages).toHaveLength(1);
+    expect(await models.EmailLoginCode.findById(orphanId).lean()).toMatchObject({
+      sentAt: null,
+      revokedAt: expect.any(Date)
+    });
+    expect(
+      await models.EmailLoginCode.countDocuments({ sentAt: { $ne: null }, revokedAt: null })
+    ).toBe(1);
+  });
+
   it.each(["zero-match", "persistence-error"] as const)(
     "fails sign-in-code delivery closed after provider acceptance and %s acknowledgement",
     async (failure) => {
@@ -1455,14 +1502,12 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
       const email = `${failure}-email-code@example.com`;
       await register(request.agent(emailApp), email);
 
-      const originalAcknowledge = service.acknowledgeEmailLoginCodeDelivery.bind(service);
       const acknowledgementSpy = vi.spyOn(service, "acknowledgeEmailLoginCodeDelivery");
       if (failure === "zero-match") {
         acknowledgementSpy.mockResolvedValueOnce(false);
       } else {
-        acknowledgementSpy.mockImplementationOnce(async (codeId) => {
-          expect(await originalAcknowledge(codeId)).toBe(true);
-          throw new Error("synthetic post-commit acknowledgement failure");
+        acknowledgementSpy.mockImplementationOnce(async () => {
+          throw new Error("synthetic pre-update acknowledgement persistence failure");
         });
       }
 
@@ -1487,7 +1532,7 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
       expect(JSON.stringify(response.body)).not.toContain(firstMessage.code);
       const firstRecord = await models.EmailLoginCode.findOne({}).lean();
       expect(firstRecord).toMatchObject({
-        sentAt: failure === "zero-match" ? null : expect.any(Date),
+        sentAt: null,
         revokedAt: expect.any(Date)
       });
       expect(

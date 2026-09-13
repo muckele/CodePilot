@@ -57,6 +57,7 @@ export async function bootstrapApi(options: BootstrapApiOptions): Promise<Bootst
     sessionConfig: options.config.session,
     registrationConfig: options.config.registration,
     loginCodePepper: options.config.email.loginCodePepper,
+    loginCodeDeliveryLeaseMs: options.config.email.requestTimeoutMs + 5_000,
     aiConfig: options.config.ai,
     emailProvider
   });

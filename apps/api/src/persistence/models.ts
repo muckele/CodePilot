@@ -55,6 +55,7 @@ export interface EmailLoginCodeRecord {
   purpose: "email_login";
   codeDigest: string;
   expiresAt: Date;
+  deliveryLeaseExpiresAt?: Date;
   sentAt: Date | null;
   consumedAt: Date | null;
   revokedAt: Date | null;
@@ -337,6 +338,7 @@ const emailLoginCodeSchema = new Schema<EmailLoginCodeRecord>(
       select: false
     },
     expiresAt: { type: Date, required: true },
+    deliveryLeaseExpiresAt: { type: Date, required: false },
     sentAt: { type: Date, default: null },
     consumedAt: { type: Date, default: null },
     revokedAt: { type: Date, default: null },

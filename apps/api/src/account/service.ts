@@ -329,6 +329,7 @@ export class AccountService {
   readonly #dummyPasswordHash: string;
   readonly #loginCodePepper: Buffer | null;
   readonly #dummyLoginCodeDigest: string | null;
+  readonly #loginCodeDeliveryLeaseMs: number;
   readonly #now: () => Date;
 
   private constructor(options: {
@@ -339,6 +340,7 @@ export class AccountService {
     dummyPasswordHash: string;
     loginCodePepper?: Buffer | null;
     dummyLoginCodeDigest: string | null;
+    loginCodeDeliveryLeaseMs?: number;
     now?: () => Date;
   }) {
     this.#models = options.models;
@@ -351,6 +353,7 @@ export class AccountService {
         ? null
         : Buffer.from(options.loginCodePepper);
     this.#dummyLoginCodeDigest = options.dummyLoginCodeDigest;
+    this.#loginCodeDeliveryLeaseMs = options.loginCodeDeliveryLeaseMs ?? 15_000;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -360,6 +363,7 @@ export class AccountService {
     sessionConfig: SessionConfig;
     registrationConfig: RegistrationConfig;
     loginCodePepper?: Buffer | null;
+    loginCodeDeliveryLeaseMs?: number;
     now?: () => Date;
   }): Promise<AccountService> {
     const dummyPasswordHash = await createDummyPasswordHash();
@@ -780,6 +784,7 @@ export class AccountService {
       code
     });
     const expiresAt = new Date(now.getTime() + 10 * 60 * 1_000);
+    const deliveryLeaseExpiresAt = new Date(now.getTime() + this.#loginCodeDeliveryLeaseMs);
     const cooldownBoundary = new Date(now.getTime() - 60_000);
     const databaseSession = await this.#models.User.db.startSession();
     let result: EmailLoginCodeIssueResult = { kind: "missing_account" };
@@ -796,13 +801,30 @@ export class AccountService {
           return;
         }
 
+        await this.#models.EmailLoginCode.updateMany(
+          {
+            userId: user._id,
+            purpose: "email_login",
+            sentAt: null,
+            consumedAt: null,
+            revokedAt: null,
+            $or: [
+              { deliveryLeaseExpiresAt: { $lte: now } },
+              { deliveryLeaseExpiresAt: { $exists: false } }
+            ]
+          },
+          { $set: { revokedAt: now } },
+          { session: databaseSession }
+        );
+
         const recentActive = await this.#models.EmailLoginCode.findOne(
           {
             userId: user._id,
             purpose: "email_login",
             createdAt: { $gt: cooldownBoundary },
             consumedAt: null,
-            revokedAt: null
+            revokedAt: null,
+            $or: [{ sentAt: { $ne: null } }, { sentAt: null, deliveryLeaseExpiresAt: { $gt: now } }]
           },
           null,
           { session: databaseSession }
@@ -830,6 +852,7 @@ export class AccountService {
               purpose: "email_login",
               codeDigest,
               expiresAt,
+              deliveryLeaseExpiresAt,
               sentAt: null,
               consumedAt: null,
               revokedAt: null,

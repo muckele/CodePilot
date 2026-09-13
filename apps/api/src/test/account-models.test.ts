@@ -36,12 +36,16 @@ describe("self-service account access models", () => {
       min: 0,
       max: 5
     });
+    expect(model.schema.path("deliveryLeaseExpiresAt").options).toMatchObject({
+      required: false
+    });
 
     const record = new model({
       userId: new Types.ObjectId(),
       purpose: "email_login",
       codeDigest: "a".repeat(64),
       expiresAt: new Date("2026-09-13T05:10:00.000Z"),
+      deliveryLeaseExpiresAt: new Date("2026-09-13T05:00:15.000Z"),
       sentAt: null,
       consumedAt: null,
       revokedAt: null,
