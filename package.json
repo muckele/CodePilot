@@ -1,6 +1,6 @@
 {
   "name": "codelift-ai",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "A 365-day, mock-first Full-Stack AI Engineering learning accountability platform.",
   "type": "module",

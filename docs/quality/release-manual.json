@@ -1,8 +1,8 @@
 {
   "evidenceVersion": 3,
-  "observedAt": "2026-09-13T07:04:45.000Z",
-  "observationSourceRevision": "a72ce7c0d42b91bdbebbc929bc7b1c55172be952",
-  "sourceDigest": "8efbf3ed42dc09ee56657192abab8cbd1d02fa387767c21000729d720d133861",
+  "observedAt": "2026-09-13T07:45:01.000Z",
+  "observationSourceRevision": "aa1d9e302ad3f59790991d81422ffdb63c1b22ec",
+  "sourceDigest": "a6b0adac55363dfed1470866dbd1c09d52966219a7b58c38dbd592c42cac290e",
   "reviewProfile": "manual-repository-playwright-chromium-mobile-webkit",
   "reviewIdentity": "fresh synthetic example.test accounts only",
   "browser": "Chromium from the repository Playwright installation",
@@ -240,7 +240,8 @@
       "emailLoginCode": "a synthetic delivered code created a session and honored the protected return destination",
       "emailLoginFailureBoundaries": "wrong, reused, and expired code submissions were rejected with generic public behavior",
       "fakeEmailOutboxGuarded": "test-only private atomic records were consumed once, removed immediately, and cleaned after every journey",
-      "browserMatrix": "all twenty-one repository journeys passed across Chromium and mobile WebKit"
+      "browserMatrix": "all twenty-one repository journeys passed across Chromium and mobile WebKit",
+      "latestFullRepositoryRun": "21/21 current-source journeys passed at 2026-09-13T07:45:01Z"
     },
     "focusChecks": [
       "account-deletion validation error focused its alert",

@@ -6,6 +6,9 @@ in the [self-host runbook](self-host.md). It retains eight local ciphertext
 archives and recreates database authentication from separate operator secrets.
 No off-device destination or automatic backup schedule has been configured;
 the provider proposal below remains a separate hosted-deployment option.
+Backups can contain reset/code digests and delivery-state records but never the
+separate login-code pepper. A restored digest is therefore not a plaintext code;
+after pepper rotation, restored historical codes remain unverifiable.
 
 MongoDB stores product state. PostgreSQL is a separate curriculum lab and is
 not needed to restore product operation.
@@ -32,6 +35,13 @@ Retention policy:
 - password-reset records: unusable at their configured expiry and TTL-deleted
   seven days later; only a digest is stored; issuing a replacement revokes
   every older unused link, and a successful reset revokes every sibling link;
+  self-service email resets additionally require a committed `sentAt` delivery
+  acknowledgement, while operator-issued v0.1/reset records remain compatible;
+- email sign-in-code records: unusable after ten minutes, five failed attempts,
+  consumption, revocation, or missing delivery acknowledgement; only a hidden
+  purpose/record-bound HMAC digest is stored, never the six-digit code; records
+  are TTL-deleted seven days after expiry and deleted immediately with the
+  account;
 - identity-free daily export/deletion counters: TTL-deleted after 400 days;
 - centralized request logs: proposed 30 days for the pilot; no request body,
   query string, credential, raw token, note, evidence, or reflection text;
@@ -48,8 +58,8 @@ models:
 2. Capture the provider snapshot identifier, source cluster, release SHA,
    encryption/region, start time, and expected RPO.
 3. Restore into a new isolated cluster/project that has no production ingress,
-   provider integration, webhook, or email capability. Never restore over the
-   source cluster for a drill.
+   provider integration, webhook, or email capability. Keep
+   `EMAIL_PROVIDER=disabled`. Never restore over the source cluster for a drill.
 4. Point a one-off API/seed validation job at the restored URI. Validate indexes,
    run `pnpm seed:validate`, verify both synthetic tenants remain isolated, and
    export the first account.
@@ -63,6 +73,12 @@ outstanding access links as the incident requires, run the guarded live check,
 and obtain incident-owner approval before reopening access. A restore can
 reintroduce data deleted after the recovery point; reconcile deletion requests
 from the incident log before reopening.
+
+If the login-code pepper is lost, suspected exposed, or deliberately rotated,
+invalidate every outstanding email login-code record before restarting service.
+Do not try to recover, export, or reissue the old codes. The private self-host
+rotation command enforces a fresh encrypted backup, API stop, pepper replacement,
+database invalidation, and restart in that order.
 
 Account export is authenticated and includes tenant-scoped source plus derived
 records in a versioned JSON document. It excludes password/session/CSRF/token
@@ -86,8 +102,8 @@ serially deletes every user-owned collection:
 progress, reflections, XP, achievements, skill evidence, reviews,
 misconceptions, Error Museum entries, portfolio, AI traces, eval runs, indexed
 sources/embeddings, agent runs, job applications, authenticated activity,
-invitations consumed by the account, password resets, and sessions, followed by
-the user. Serial operations are intentional because the Mongo driver does not
+invitations consumed by the account, password resets, email login codes, and
+sessions, followed by the user. Serial operations are intentional because the Mongo driver does not
 support parallel operations on one transaction session. The only surviving
 lifecycle signal is an identity-free daily deletion counter with the bounded
 retention above.

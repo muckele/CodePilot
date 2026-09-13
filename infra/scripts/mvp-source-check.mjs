@@ -18,7 +18,17 @@ function run(executable, argumentsValue, environment = process.env) {
 }
 
 const requiredMarkers = [
-  ["apps/api/src/config.ts", ["invite_only", "WEB_ORIGIN must use HTTPS", "MONGO_URI is required"]],
+  [
+    "apps/api/src/config.ts",
+    [
+      "invite_only",
+      "WEB_ORIGIN must use HTTPS",
+      "MONGO_URI is required",
+      "EMAIL_PROVIDER=fake is forbidden in production",
+      "RESEND_API_KEY_FILE",
+      "EMAIL_LOGIN_CODE_PEPPER_FILE"
+    ]
+  ],
   [
     "apps/api/src/account/service.ts",
     ["resetPassword", "exportAccount", "Invitation.findOneAndUpdate"]
@@ -36,7 +46,22 @@ const requiredMarkers = [
   ],
   [
     "infra/compose.production.yaml",
-    ["REGISTRATION_MODE: invite_only", "TRUST_PROXY_HOPS:", "AI_PROVIDER: mock", "MONGO_URI:"]
+    [
+      "REGISTRATION_MODE: invite_only",
+      "TRUST_PROXY_HOPS:",
+      "AI_PROVIDER: mock",
+      "MONGO_URI_FILE:",
+      "RESEND_API_KEY_FILE:",
+      "EMAIL_LOGIN_CODE_PEPPER_FILE:"
+    ]
+  ],
+  [
+    "docs/adr/0009-self-service-account-access.md",
+    ["delivery acknowledgement", "runtime outage", "opaque idempotency", "operator setup"]
+  ],
+  [
+    "docs/milestones/17-self-service-account-access.md",
+    ["v0.1.1", "password login", "Email me a sign-in code", "Forgot password"]
   ],
   ["services/ai/Dockerfile", ["uv sync --locked", "USER 65532:65532"]],
   ["docs/mvp-pilot.md", ["Private-pilot hypothesis", "Stop criteria"]]
@@ -87,8 +112,24 @@ run("docker", ["compose", "-f", "infra/compose.production.yaml", "config", "--qu
   CODELIFT_AI_IMAGE: "example.invalid/codelift-ai@sha256:" + "c".repeat(64),
   WEB_ORIGIN: "https://pilot.example.test",
   TRUST_PROXY_HOPS: "1",
-  MONGO_URI: "mongodb+srv://managed.example.test/codelift"
+  MONGO_URI_SECRET_FILE: "/dev/null",
+  EMAIL_PROVIDER: "disabled"
 });
+
+for (const manifest of [
+  "package.json",
+  "apps/api/package.json",
+  "apps/web/package.json",
+  "packages/config/package.json",
+  "packages/contracts/package.json",
+  "packages/curriculum/package.json",
+  "packages/evals/package.json",
+  "packages/ui/package.json"
+]) {
+  const parsed = JSON.parse(await readFile(manifest, "utf8"));
+  if (parsed.version !== "0.1.1")
+    throw new Error(`${manifest} must declare release version 0.1.1.`);
+}
 
 process.stdout.write(
   `${JSON.stringify(
