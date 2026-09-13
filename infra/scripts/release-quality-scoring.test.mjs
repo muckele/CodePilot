@@ -83,6 +83,19 @@ async function browserFixture(t) {
   ]) {
     await copyEntry(fixtureRoot, relativePath);
   }
+
+  const digestResult = spawnSync(
+    process.execPath,
+    [path.join(fixtureRoot, "infra/scripts/check-browser-evidence.mjs"), "--print-digest"],
+    { cwd: fixtureRoot, encoding: "utf8" }
+  );
+  assert.equal(digestResult.status, 0);
+
+  const evidence = await readEvidence(fixtureRoot);
+  evidence.observedAt = new Date().toISOString();
+  evidence.sourceDigest = digestResult.stdout.trim();
+  await writeEvidence(fixtureRoot, evidence);
+
   return fixtureRoot;
 }
 
@@ -127,6 +140,8 @@ test("valid authoritative v3 browser evidence earns the existing visual QA point
   const { result, report } = await validateBrowserEvidence(fixtureRoot);
 
   assert.equal(evidence.evidenceVersion, BROWSER_EVIDENCE_VERSION);
+  assert.ok(Date.now() - Date.parse(evidence.observedAt) < 10_000);
+  assert.equal(evidence.sourceDigest, report.source.digest);
   assert.equal(result.status, 0);
   assert.equal(report.passed, true);
   assert.equal(
@@ -254,37 +269,42 @@ test("unrelated release scoring weights, threshold, and command rules remain fix
     operations: 5
   });
   assert.equal(RELEASE_PASSING_SCORE, 95);
-  assert.deepEqual(
-    REQUIRED_RELEASE_COMMANDS.map(({ id }) => id),
-    [
-      "install:frozen",
-      "format:check",
-      "lint",
-      "typecheck",
-      "test",
-      "test:integration",
-      "test:e2e",
-      "browser:evidence",
-      "build",
-      "seed:first",
-      "seed:repeat",
-      "seed:validate",
-      "curriculum:preflight",
-      "curriculum:validate",
-      "curriculum:links",
-      "eval:local",
-      "mcp:check",
-      "security:check",
-      "security:audit",
-      "python:lock-check",
-      "python:audit",
-      "image:audit",
-      "mvp:check",
-      "performance:check",
-      "compose:check",
-      "compose:smoke",
-      "fresh-clone:check"
-    ]
+  assert.deepEqual(REQUIRED_RELEASE_COMMANDS, [
+    {
+      id: "install:frozen",
+      script: "install",
+      argumentsValue: ["install", "--frozen-lockfile", "--offline"]
+    },
+    { id: "format:check", script: "format:check" },
+    { id: "lint", script: "lint" },
+    { id: "typecheck", script: "typecheck" },
+    { id: "test", script: "test" },
+    { id: "test:integration", script: "test:integration" },
+    { id: "test:e2e", script: "test:e2e" },
+    { id: "browser:evidence", script: "browser:evidence" },
+    { id: "build", script: "build" },
+    { id: "seed:first", script: "seed" },
+    { id: "seed:repeat", script: "seed" },
+    { id: "seed:validate", script: "seed:validate" },
+    { id: "curriculum:preflight", script: "curriculum:preflight" },
+    { id: "curriculum:validate", script: "curriculum:validate" },
+    { id: "curriculum:links", script: "curriculum:links" },
+    { id: "eval:local", script: "eval:local" },
+    { id: "mcp:check", script: "mcp:check" },
+    { id: "security:check", script: "security:check" },
+    { id: "security:audit", script: "security:audit" },
+    { id: "python:lock-check", script: "python:lock-check" },
+    { id: "python:audit", script: "python:audit" },
+    { id: "image:audit", script: "image:audit" },
+    { id: "mvp:check", script: "mvp:check" },
+    { id: "performance:check", script: "performance:check" },
+    { id: "compose:check", script: "compose:check" },
+    { id: "compose:smoke", script: "compose:smoke" },
+    { id: "fresh-clone:check", script: "fresh-clone:check" }
+  ]);
+  assert.equal(
+    Object.values(RELEASE_CATEGORY_WEIGHTS).reduce((total, weight) => total + weight, 0),
+    100
   );
   assert.deepEqual(CRITICAL_RELEASE_COMMANDS, [
     "install",
