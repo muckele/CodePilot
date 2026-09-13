@@ -3,65 +3,22 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
+import {
+  CRITICAL_RELEASE_COMMANDS,
+  RELEASE_CATEGORY_WEIGHTS,
+  RELEASE_PASSING_SCORE,
+  REQUIRED_RELEASE_COMMANDS,
+  releaseQualityPassed,
+  visualAccessibilityCategoryScore
+} from "./release-quality-scoring.mjs";
 import { fullSourceStatusArguments, releaseSourceState } from "./release-source-state.mjs";
 
 const root = process.cwd();
 const reportPath = path.join(root, "reports", "release-quality.json");
 const qualityStartedAtMs = Date.now();
 const pnpmCli = process.env.npm_execpath;
-const requiredCommands = [
-  {
-    id: "install:frozen",
-    script: "install",
-    argumentsValue: ["install", "--frozen-lockfile", "--offline"]
-  },
-  { id: "format:check", script: "format:check" },
-  { id: "lint", script: "lint" },
-  { id: "typecheck", script: "typecheck" },
-  { id: "test", script: "test" },
-  { id: "test:integration", script: "test:integration" },
-  { id: "test:e2e", script: "test:e2e" },
-  { id: "browser:evidence", script: "browser:evidence" },
-  { id: "build", script: "build" },
-  { id: "seed:first", script: "seed" },
-  { id: "seed:repeat", script: "seed" },
-  { id: "seed:validate", script: "seed:validate" },
-  { id: "curriculum:preflight", script: "curriculum:preflight" },
-  { id: "curriculum:validate", script: "curriculum:validate" },
-  { id: "curriculum:links", script: "curriculum:links" },
-  { id: "eval:local", script: "eval:local" },
-  { id: "mcp:check", script: "mcp:check" },
-  { id: "security:check", script: "security:check" },
-  { id: "security:audit", script: "security:audit" },
-  { id: "python:lock-check", script: "python:lock-check" },
-  { id: "python:audit", script: "python:audit" },
-  { id: "image:audit", script: "image:audit" },
-  { id: "mvp:check", script: "mvp:check" },
-  { id: "performance:check", script: "performance:check" },
-  { id: "compose:check", script: "compose:check" },
-  { id: "compose:smoke", script: "compose:smoke" },
-  { id: "fresh-clone:check", script: "fresh-clone:check" }
-];
-const criticalCommandSet = new Set([
-  "install",
-  "typecheck",
-  "test",
-  "test:integration",
-  "test:e2e",
-  "browser:evidence",
-  "build",
-  "seed",
-  "seed:validate",
-  "curriculum:validate",
-  "eval:local",
-  "security:check",
-  "python:lock-check",
-  "python:audit",
-  "image:audit",
-  "mvp:check",
-  "compose:smoke",
-  "fresh-clone:check"
-]);
+const requiredCommands = REQUIRED_RELEASE_COMMANDS;
+const criticalCommandSet = new Set(CRITICAL_RELEASE_COMMANDS);
 
 function commandOutput(executable, argumentsValue) {
   const result = spawnSync(executable, argumentsValue, {
@@ -408,25 +365,27 @@ const securityStructuralEvidenceValid =
 const categories = [
   {
     name: "User-visible acceptance criteria",
-    maximum: 20,
-    earned: all("test:integration", "test:e2e", "build") ? 20 : 0,
+    maximum: RELEASE_CATEGORY_WEIGHTS.userVisibleAcceptance,
+    earned: all("test:integration", "test:e2e", "build")
+      ? RELEASE_CATEGORY_WEIGHTS.userVisibleAcceptance
+      : 0,
     evidence: ["test:integration", "test:e2e", "build"]
   },
   {
     name: "Type safety and runtime validation",
-    maximum: 10,
-    earned: all("typecheck", "lint") ? 10 : 0,
+    maximum: RELEASE_CATEGORY_WEIGHTS.typeSafety,
+    earned: all("typecheck", "lint") ? RELEASE_CATEGORY_WEIGHTS.typeSafety : 0,
     evidence: ["typecheck", "lint"]
   },
   {
     name: "Unit/integration/E2E evidence",
-    maximum: 15,
-    earned: all("test", "test:integration", "test:e2e") ? 15 : 0,
+    maximum: RELEASE_CATEGORY_WEIGHTS.testEvidence,
+    earned: all("test", "test:integration", "test:e2e") ? RELEASE_CATEGORY_WEIGHTS.testEvidence : 0,
     evidence: ["test", "test:integration", "test:e2e"]
   },
   {
     name: "Curriculum and seed integrity",
-    maximum: 15,
+    maximum: RELEASE_CATEGORY_WEIGHTS.curriculumIntegrity,
     earned: all(
       "seed",
       "seed:validate",
@@ -434,7 +393,7 @@ const categories = [
       "curriculum:validate",
       "curriculum:links"
     )
-      ? 15
+      ? RELEASE_CATEGORY_WEIGHTS.curriculumIntegrity
       : 0,
     evidence: {
       commands: [
@@ -451,13 +410,13 @@ const categories = [
   },
   {
     name: "Accessibility and responsive visual QA",
-    maximum: 10,
-    earned:
-      all("test:e2e", "browser:evidence") &&
-      manual?.evidenceVersion === 2 &&
-      browser?.passed === true
-        ? 10
-        : 0,
+    maximum: RELEASE_CATEGORY_WEIGHTS.visualAccessibility,
+    earned: visualAccessibilityCategoryScore({
+      e2ePassed: passed("test:e2e"),
+      browserCommandPassed: passed("browser:evidence"),
+      evidenceVersion: manual?.evidenceVersion,
+      browserEvidencePassed: browser?.passed === true
+    }),
     evidence: {
       commands: ["test:e2e", "browser:evidence"],
       sourceDigest: browser?.source?.digest ?? null,
@@ -467,7 +426,7 @@ const categories = [
   },
   {
     name: "Security and privacy",
-    maximum: 10,
+    maximum: RELEASE_CATEGORY_WEIGHTS.securityPrivacy,
     earned:
       all(
         "security:check",
@@ -479,7 +438,7 @@ const categories = [
         "test:integration",
         "test:e2e"
       ) && securityStructuralEvidenceValid
-        ? 10
+        ? RELEASE_CATEGORY_WEIGHTS.securityPrivacy
         : 0,
     evidence: {
       staticStructuralCommands: [
@@ -500,8 +459,11 @@ const categories = [
   },
   {
     name: "AI evals, grounding, and failure handling",
-    maximum: 10,
-    earned: all("eval:local", "test:integration") && behavioralEvalEvidenceValid ? 10 : 0,
+    maximum: RELEASE_CATEGORY_WEIGHTS.aiEvals,
+    earned:
+      all("eval:local", "test:integration") && behavioralEvalEvidenceValid
+        ? RELEASE_CATEGORY_WEIGHTS.aiEvals
+        : 0,
     evidence: {
       commands: ["eval:local", "test:integration"],
       caseCount: localEval?.dataset?.caseCount ?? null,
@@ -517,13 +479,14 @@ const categories = [
   },
   {
     name: "Documentation and maintainability",
-    maximum: 5,
-    earned: documentationPresent && documentationConsistent ? 5 : 0,
+    maximum: RELEASE_CATEGORY_WEIGHTS.documentation,
+    earned:
+      documentationPresent && documentationConsistent ? RELEASE_CATEGORY_WEIGHTS.documentation : 0,
     evidence: { files: fileChecks, contentConsistency: documentationContentChecks }
   },
   {
     name: "Performance, cost, and operational evidence",
-    maximum: 5,
+    maximum: RELEASE_CATEGORY_WEIGHTS.operations,
     earned:
       all(
         "performance:check",
@@ -534,7 +497,7 @@ const categories = [
       ) &&
       composeSmoke?.passed === true &&
       freshClone?.passed === true
-        ? 5
+        ? RELEASE_CATEGORY_WEIGHTS.operations
         : 0,
     evidence: {
       commands: [
@@ -608,8 +571,8 @@ const report = {
     qualityStartedAt: new Date(qualityStartedAtMs).toISOString()
   },
   score,
-  passingScore: 95,
-  passed: score >= 95 && failedCommands.length === 0 && criticalFailures.length === 0,
+  passingScore: RELEASE_PASSING_SCORE,
+  passed: releaseQualityPassed({ score, failedCommands, criticalFailures }),
   categories,
   commandResults,
   failedCommands,

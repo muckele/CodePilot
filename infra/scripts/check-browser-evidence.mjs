@@ -4,6 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 
+import { BROWSER_EVIDENCE_VERSION } from "./browser-evidence-contract.mjs";
+
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const evidencePath = path.join(root, "docs", "quality", "release-manual.json");
 const reportPath = path.join(root, "reports", "browser-evidence.json");
@@ -186,7 +188,9 @@ function sensitiveValueIssues(value, location) {
 }
 
 if (evidence !== null) {
-  if (evidence.evidenceVersion !== 3) issues.push("Browser evidenceVersion must be 3.");
+  if (evidence.evidenceVersion !== BROWSER_EVIDENCE_VERSION) {
+    issues.push(`Browser evidenceVersion must be ${BROWSER_EVIDENCE_VERSION}.`);
+  }
   issues.push(...sensitiveValueIssues(evidence, "browser evidence"));
   if (evidence.sourceDigest !== source.digest) {
     issues.push("Browser evidence is stale because the reviewed source digest changed.");
