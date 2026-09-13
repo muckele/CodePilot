@@ -24,15 +24,18 @@ import { createLearningRouter } from "../learning/router.js";
 import { LearningService } from "../learning/service.js";
 import type { PersistenceRuntime } from "../persistence/runtime.js";
 import { AccountService, type SessionIdentity } from "./service.js";
+import type { TransactionalEmailProvider } from "./transactional-email.js";
 
 export type AccountRuntime =
   | {
       readonly status: "ready";
       readonly service: AccountService;
       readonly learning: LearningService;
+      readonly emailProvider: TransactionalEmailProvider;
     }
   | {
       readonly status: "unavailable";
+      readonly emailProvider: TransactionalEmailProvider;
     };
 
 type AsyncHandler = (request: Request, response: Response, next: NextFunction) => Promise<void>;
@@ -170,11 +173,13 @@ export async function initializeAccountRuntime(
   persistence: PersistenceRuntime,
   options: Omit<Parameters<typeof AccountService.create>[0], "models"> & {
     aiConfig: ApiConfig["ai"];
+    emailProvider: TransactionalEmailProvider;
   }
 ): Promise<AccountRuntime> {
   if (persistence.status !== "ready") {
     return {
-      status: "unavailable"
+      status: "unavailable",
+      emailProvider: options.emailProvider
     };
   }
 
@@ -185,6 +190,7 @@ export async function initializeAccountRuntime(
   return {
     status: "ready",
     service,
+    emailProvider: options.emailProvider,
     learning: new LearningService({
       models: persistence.models,
       curriculum: options.curriculum,

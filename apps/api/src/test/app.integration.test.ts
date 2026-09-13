@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../app.js";
+import { FakeTransactionalEmailProvider } from "../account/transactional-email.js";
 import { bootstrapApi } from "../bootstrap.js";
 import type { ApiConfig } from "../config.js";
 import type { CurriculumRuntime } from "../curriculum/runtime.js";
@@ -248,6 +249,7 @@ describe("M1 API integration", () => {
       logger: silentLogger
     });
     try {
+      expect(enabled.account.emailProvider).toBeInstanceOf(FakeTransactionalEmailProvider);
       const enabledResponse = await request(enabled.app).get("/api/v1/config");
       expect(enabledResponse.status).toBe(200);
       expect(enabledResponse.body.emailSelfServiceEnabled).toBe(true);
