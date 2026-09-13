@@ -22,6 +22,7 @@ import {
   registerAndOnboardWithKeyboard,
   responseJson
 } from "./support/journey.js";
+import { captureReleaseScreenshotWhenEnabled } from "./support/release-screenshot-capture.js";
 
 const browserErrors = new WeakMap<Page, string[]>();
 const releaseScreenshotRoot = resolve(process.cwd(), "docs/quality/screenshots");
@@ -31,14 +32,16 @@ async function captureReleaseScreenshot(
   name: string,
   options: { readonly fullPage?: boolean } = {}
 ): Promise<void> {
-  await mkdir(releaseScreenshotRoot, { recursive: true });
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-  });
-  await page.screenshot({
-    path: resolve(releaseScreenshotRoot, name),
-    animations: "disabled",
-    fullPage: options.fullPage ?? true
+  await captureReleaseScreenshotWhenEnabled(async () => {
+    await mkdir(releaseScreenshotRoot, { recursive: true });
+    await page.evaluate(async () => {
+      await document.fonts.ready;
+    });
+    await page.screenshot({
+      path: resolve(releaseScreenshotRoot, name),
+      animations: "disabled",
+      fullPage: options.fullPage ?? true
+    });
   });
 }
 
@@ -663,10 +666,12 @@ test("10. password login and global keyboard sign-out remain truthful", async ({
     await expect(workspaceMenu).toHaveAttribute("open", "");
     const signOut = page.getByRole("button", { name: "Sign out" });
     await expect(signOut).toBeVisible();
-    await mkdir(releaseScreenshotRoot, { recursive: true });
-    await signOut.screenshot({
-      path: resolve(releaseScreenshotRoot, "v0.1.1-global-sign-out.png"),
-      animations: "disabled"
+    await captureReleaseScreenshotWhenEnabled(async () => {
+      await mkdir(releaseScreenshotRoot, { recursive: true });
+      await signOut.screenshot({
+        path: resolve(releaseScreenshotRoot, "v0.1.1-global-sign-out.png"),
+        animations: "disabled"
+      });
     });
     await signOut.focus();
     await expect(signOut).toBeFocused();

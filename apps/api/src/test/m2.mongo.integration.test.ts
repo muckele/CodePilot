@@ -2531,7 +2531,11 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
   it("counts genuine read-only D1 and D7 activity by UTC calendar day and owns its lifecycle", async () => {
     if (runtime.persistence.status !== "ready") throw new Error("MongoDB is required.");
     const models = runtime.persistence.models;
-    let now = new Date("2026-08-01T23:59:00.000Z");
+    const dayMs = 24 * 60 * 60 * 1_000;
+    const nextUtcMidnight = new Date();
+    nextUtcMidnight.setUTCDate(nextUtcMidnight.getUTCDate() + 1);
+    nextUtcMidnight.setUTCHours(0, 0, 0, 0);
+    let now = new Date(nextUtcMidnight.getTime() - 60_000);
     const accounts = await AccountService.create({
       models,
       curriculum: runtime.curriculum,
@@ -2552,24 +2556,25 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
       if (index === 0) returningSession = registered;
     }
     if (returningSession === undefined) throw new Error("Expected one returning session.");
+    expect(returningSession.expiresAt.getTime()).toBeGreaterThan(Date.now());
     await models.User.collection.updateMany(
       { email: /^read-only-return-/ },
       {
         $set: {
-          createdAt: new Date("2026-08-01T23:59:00.000Z"),
-          updatedAt: new Date("2026-08-01T23:59:00.000Z")
+          createdAt: now,
+          updatedAt: now
         }
       }
     );
 
-    now = new Date("2026-08-02T00:01:00.000Z");
+    now = new Date(nextUtcMidnight.getTime() + 60_000);
     expect(await accounts.me(returningSession.sessionToken)).not.toBeNull();
-    now = new Date("2026-08-08T00:01:00.000Z");
+    now = new Date(nextUtcMidnight.getTime() + 6 * dayMs + 60_000);
     const returning = await accounts.authenticate(returningSession.sessionToken);
 
     const report = await buildPilotMetrics(models, {
-      since: new Date("2026-08-01T00:00:00.000Z"),
-      until: new Date("2026-08-09T00:00:00.000Z"),
+      since: new Date(nextUtcMidnight.getTime() - dayMs),
+      until: new Date(nextUtcMidnight.getTime() + 7 * dayMs),
       minimumCohortSize: 5
     });
     expect(report.suppressed).toBe(false);

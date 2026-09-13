@@ -19,7 +19,7 @@
     "format:check": "prettier --check . && pnpm python:format:check",
     "lint": "eslint . --max-warnings 0 && pnpm python:lint",
     "typecheck": "pnpm build:packages && pnpm -r --if-present typecheck && pnpm e2e:typecheck && pnpm python:typecheck",
-    "test": "pnpm build:packages && pnpm -r --if-present test && pnpm python:test && node --test infra/scripts/release-source-state.test.mjs infra/scripts/fresh-clone-environment.test.mjs",
+    "test": "pnpm build:packages && pnpm -r --if-present test && pnpm python:test && node --test infra/scripts/release-source-state.test.mjs infra/scripts/fresh-clone-environment.test.mjs && node --import tsx --test infra/scripts/release-screenshot-capture.test.ts",
     "test:integration": "pnpm build:packages && pnpm --filter @codelift/api test:integration",
     "test:component-flow": "pnpm build:packages && pnpm --filter @codelift/web test:component-flow",
     "test:e2e": "pnpm build:packages && pnpm e2e:typecheck && NODE_ENV=test playwright test",
