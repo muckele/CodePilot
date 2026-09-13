@@ -30,7 +30,7 @@ import {
   SCRATCH_MAX_LENGTH,
   writeScratch
 } from "./scratchStorage";
-import { type AccountSessionState, useAccountSession } from "./AccountSessionContext";
+import { type AccountSessionState, useAccountSession } from "./accountSession";
 import { ALLOWED_RETURN_PATHS, allowedReturnTo } from "../../app/navigation";
 import {
   DayTaskManager,
@@ -2134,9 +2134,15 @@ type AccountOutletContextValue = {
 export function AccountExperience() {
   const location = useLocation();
   const navigate = useNavigate();
-  const accountSession = useAccountSession();
-  const session = accountSession.state;
-  const csrfToken = accountSession.csrfToken;
+  const {
+    state: session,
+    csrfToken,
+    authenticate: authenticateAccount,
+    updateUser: updateAccountUser,
+    clearSession: clearAccountSession,
+    expireSession: expireAccountSession,
+    refresh: refreshSession
+  } = useAccountSession();
   const [postAuthenticationPath, setPostAuthenticationPath] = useState<string | null>(null);
   const [postSessionDestination, setPostSessionDestination] = useState<string | null>(null);
 
@@ -2164,31 +2170,31 @@ export function AccountExperience() {
   }
 
   const expireSession = useCallback(() => {
-    accountSession.expireSession();
-  }, [accountSession.expireSession]);
+    expireAccountSession();
+  }, [expireAccountSession]);
 
   const authenticate = useCallback(
     (user: AccountUser, token: string, destination: string) => {
       setPostAuthenticationPath(destination);
-      accountSession.authenticate(user, token);
+      authenticateAccount(user, token);
     },
-    [accountSession.authenticate]
+    [authenticateAccount]
   );
 
   const updateUser = useCallback(
     (user: AccountUser) => {
-      accountSession.updateUser(user);
+      updateAccountUser(user);
     },
-    [accountSession.updateUser]
+    [updateAccountUser]
   );
 
   const clearSession = useCallback(
     (destination?: string) => {
       setPostAuthenticationPath(null);
       setPostSessionDestination(destination ?? null);
-      accountSession.clearSession();
+      clearAccountSession();
     },
-    [accountSession.clearSession]
+    [clearAccountSession]
   );
 
   useEffect(() => {
@@ -2210,7 +2216,7 @@ export function AccountExperience() {
     return <CheckingWorkspace />;
   }
   if (session.status === "unavailable") {
-    return <UnavailableWorkspace state={session} retry={accountSession.refresh} />;
+    return <UnavailableWorkspace state={session} retry={refreshSession} />;
   }
   if (session.status === "expired") {
     return (

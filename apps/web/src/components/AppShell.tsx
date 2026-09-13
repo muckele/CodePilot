@@ -1,7 +1,7 @@
 import { type PropsWithChildren, useEffect, useRef, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
 
-import { useOptionalAccountSession } from "../features/account/AccountSessionContext";
+import { useOptionalAccountSession } from "../features/account/accountSession";
 import { AccountApiError } from "../features/account/api/accountApi";
 
 type AppShellProps = PropsWithChildren<{

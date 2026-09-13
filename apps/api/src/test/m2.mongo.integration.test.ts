@@ -797,7 +797,8 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
         .set("X-CSRF-Token", protection.csrfToken)
         .send({ email: targetEmail, code });
       expect(response.status).toBe(401);
-      const { requestId: _requestId, ...normalized } = response.body as Record<string, unknown>;
+      const normalized = { ...(response.body as Record<string, unknown>) };
+      delete normalized.requestId;
       normalizedFailures.push(normalized);
       return response;
     };

@@ -13,7 +13,7 @@ describe("email login-code cryptography", () => {
     [1, "000001"],
     [999_999, "999999"]
   ])("generates secure fixed-width code %s as %s", (randomValue, expected) => {
-    const randomInt = vi.fn((_minimum: number, _maximum: number) => randomValue);
+    const randomInt = vi.fn(() => randomValue);
 
     expect(generateLoginCode(randomInt)).toBe(expected);
     expect(randomInt).toHaveBeenCalledOnce();

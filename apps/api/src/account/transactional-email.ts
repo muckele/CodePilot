@@ -285,11 +285,11 @@ export class FakeTransactionalEmailProvider implements TransactionalEmailProvide
 }
 
 export class DisabledTransactionalEmailProvider implements TransactionalEmailProvider {
-  async sendPasswordReset(_input: PasswordResetEmailInput): Promise<void> {
+  async sendPasswordReset(): Promise<void> {
     throw new TransactionalEmailError("unavailable");
   }
 
-  async sendLoginCode(_input: LoginCodeEmailInput): Promise<void> {
+  async sendLoginCode(): Promise<void> {
     throw new TransactionalEmailError("unavailable");
   }
 }

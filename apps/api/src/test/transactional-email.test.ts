@@ -204,10 +204,7 @@ describe("opaque provider idempotency", () => {
 
 describe("Resend transactional email adapter", () => {
   it("constructs without network and sends one bounded password-reset request", async () => {
-    const fetchMock = vi.fn(
-      async (_input: string | URL | Request, _init?: RequestInit) =>
-        new Response(null, { status: 202 })
-    );
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
     const provider = new ResendTransactionalEmailProvider({
       apiKey: `re_${"a".repeat(29)}`,
       from: "security@pilot.example.test",
@@ -253,10 +250,7 @@ describe("Resend transactional email adapter", () => {
   });
 
   it("omits reply-to and sends the fixed login-code content", async () => {
-    const fetchMock = vi.fn(
-      async (_input: string | URL | Request, _init?: RequestInit) =>
-        new Response(null, { status: 200 })
-    );
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
     const provider = new ResendTransactionalEmailProvider({
       apiKey: `re_${"b".repeat(29)}`,
       from: "security@pilot.example.test",
