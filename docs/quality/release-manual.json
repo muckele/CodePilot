@@ -1,8 +1,8 @@
 {
   "evidenceVersion": 3,
-  "observedAt": "2026-09-13T08:13:50.000Z",
-  "observationSourceRevision": "be8378aaaf203d66296224c93f6c0cd691b5772c",
-  "sourceDigest": "2d49b35e48e562511d0103e1a160dfff7b377272f0f53d4bfc29e6e75d7c622f",
+  "observedAt": "2026-09-13T08:57:56.000Z",
+  "observationSourceRevision": "9227c86f36618474546bfa6fe862f8f1fa0af1eb",
+  "sourceDigest": "7229b1af97dd26c7ab9f004f5d64682f6b9695c889c539f3a760481592dc925d",
   "reviewProfile": "manual-repository-playwright-chromium-mobile-webkit",
   "reviewIdentity": "fresh synthetic example.test accounts only",
   "browser": "Chromium from the repository Playwright installation",
@@ -175,8 +175,8 @@
   },
   "behavioralEvidence": {
     "completeManualObservation": {
-      "startedAt": "2026-09-13T07:03:54.000Z",
-      "completedAt": "2026-09-13T07:04:45.000Z",
+      "startedAt": "2026-09-13T08:57:07.000Z",
+      "completedAt": "2026-09-13T08:57:56.000Z",
       "passed": true,
       "wideSurfacesPassed": 14,
       "narrowSurfacesPassed": 14,
@@ -241,7 +241,7 @@
       "emailLoginFailureBoundaries": "wrong, reused, and expired code submissions were rejected with generic public behavior",
       "fakeEmailOutboxGuarded": "test-only private atomic records were consumed once, removed immediately, and cleaned after every journey",
       "browserMatrix": "all twenty-one repository journeys passed across Chromium and mobile WebKit",
-      "latestFullRepositoryRun": "21/21 current-source journeys passed at 2026-09-13T07:52:54Z"
+      "latestFullRepositoryRun": "21/21 current-source journeys passed at 2026-09-13T08:57:56Z"
     },
     "focusChecks": [
       "account-deletion validation error focused its alert",
