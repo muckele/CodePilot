@@ -8,6 +8,7 @@ import {
   issuePasswordReset,
   revokeUnusedInvitation
 } from "./access-operator.js";
+import { buildAccountOperatorEnvironment } from "./operator-environment.js";
 
 function option(name: string, required = true): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -47,14 +48,7 @@ if (
   );
 }
 
-const config = loadApiConfig({
-  ...process.env,
-  REGISTRATION_MODE: process.env.REGISTRATION_MODE ?? "closed",
-  PERSISTENCE_MODE: "required",
-  MONGO_URI:
-    process.env.MONGO_URI ??
-    "mongodb://127.0.0.1:27018/codelift?replicaSet=rs0&directConnection=true"
-});
+const config = loadApiConfig(buildAccountOperatorEnvironment(process.env));
 const persistence = await initializePersistence(config.persistence);
 if (persistence.status !== "ready") {
   throw new Error("MongoDB is required for operator account-access commands.");

@@ -86,6 +86,8 @@ test("rendered self-host deployment exposes only loopback web and gives private 
     ]
   );
   assert.equal(config.services.seed.environment.EMAIL_PROVIDER, "disabled");
+  assert.equal(config.services.seed.environment.MONGO_URI, undefined);
+  assert.equal(config.services.seed.environment.MONGO_URI_FILE, "/run/secrets/mongo-uri");
   assert.equal(config.services.seed.environment.RESEND_API_KEY_FILE, undefined);
   assert.equal(config.services.seed.environment.EMAIL_LOGIN_CODE_PEPPER_FILE, undefined);
   assert.equal(environment.AI_PROVIDER, "mock");
