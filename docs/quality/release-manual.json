@@ -1,8 +1,8 @@
 {
   "evidenceVersion": 3,
-  "observedAt": "2026-09-13T07:52:54.000Z",
-  "observationSourceRevision": "e2503f952de84e6740f677668ac986b3ce04e205",
-  "sourceDigest": "0d9e7350cbe1e9eaf13985e6a0fe99a4560c3c7b03fe4fe52149c512a5ca9738",
+  "observedAt": "2026-09-13T08:13:50.000Z",
+  "observationSourceRevision": "be8378aaaf203d66296224c93f6c0cd691b5772c",
+  "sourceDigest": "2d49b35e48e562511d0103e1a160dfff7b377272f0f53d4bfc29e6e75d7c622f",
   "reviewProfile": "manual-repository-playwright-chromium-mobile-webkit",
   "reviewIdentity": "fresh synthetic example.test accounts only",
   "browser": "Chromium from the repository Playwright installation",
