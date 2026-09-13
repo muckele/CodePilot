@@ -1,9 +1,15 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, request as playwrightRequest, test, type Page } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
 
-import { issueE2eInvitation, userOwnedCounts } from "./support/database.js";
+import {
+  expireLatestE2EEmailLoginCode,
+  issueE2eInvitation,
+  userOwnedCounts
+} from "./support/database.js";
+import { consumeE2EEmail, expectNoE2EEmail, resetE2EEmailOutbox } from "./support/email-outbox.js";
 import { E2E_BASE_URL } from "./support/environment.js";
 import {
   accountFor,
@@ -18,6 +24,32 @@ import {
 } from "./support/journey.js";
 
 const browserErrors = new WeakMap<Page, string[]>();
+const releaseScreenshotRoot = resolve(process.cwd(), "docs/quality/screenshots");
+
+async function captureReleaseScreenshot(
+  page: Page,
+  name: string,
+  options: { readonly fullPage?: boolean } = {}
+): Promise<void> {
+  await mkdir(releaseScreenshotRoot, { recursive: true });
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+  });
+  await page.screenshot({
+    path: resolve(releaseScreenshotRoot, name),
+    animations: "disabled",
+    fullPage: options.fullPage ?? true
+  });
+}
+
+function consumeExpectedBrowserError(page: Page, expected: string): void {
+  const errors = browserErrors.get(page) ?? [];
+  const matches = errors
+    .map((error, index) => ({ error, index }))
+    .filter(({ error }) => error === expected);
+  expect(matches, `expected one scoped browser error: ${expected}`).toHaveLength(1);
+  errors.splice(matches[0]?.index ?? -1, 1);
+}
 
 async function expectNoCriticalAccessibilityViolations(page: Page, route: string) {
   const results = await new AxeBuilder({ page })
@@ -179,11 +211,13 @@ async function captureVisualEvidence(
 }
 
 test.beforeEach(async ({ page }) => {
+  await resetE2EEmailOutbox();
   browserErrors.set(page, recordUnexpectedBrowserErrors(page));
 });
 
 test.afterEach(async ({ page }) => {
   expect(browserErrors.get(page) ?? []).toEqual([]);
+  await resetE2EEmailOutbox();
 });
 
 test("1. register → onboard → Day 1 → Core evidence/reflection → completion → XP", async ({
@@ -546,6 +580,7 @@ test("8. account deletion removes product records and derived indexed chunks", a
     userActivities: 0,
     invitations: 0,
     passwordResets: 0,
+    emailLoginCodes: 0,
     progress: 0,
     reflections: 0,
     xpEvents: 0,
@@ -606,7 +641,261 @@ test("9. a stale or invalid session cookie is cleared and protected routing reco
   expect(currentCookies.some((cookie) => cookie.value === staleValue)).toBe(false);
 });
 
-test("10. release visual and accessibility evidence covers responsive, theme, motion, and focus boundaries", async ({
+test("10. password login and global keyboard sign-out remain truthful", async ({
+  context,
+  page
+}, testInfo) => {
+  const account = accountFor(testInfo, "password-signout");
+  let staleClient: Awaited<ReturnType<typeof playwrightRequest.newContext>> | null = null;
+  try {
+    await provisionAccount(page, account);
+    await page.goto("/app/today");
+    await expect(page.getByRole("heading", { name: "Today’s mission" })).toBeVisible();
+    const oldCookie = (await context.cookies(E2E_BASE_URL)).find(
+      (cookie) => cookie.name === "codelift_session"
+    );
+    expect(oldCookie?.value).toBeTruthy();
+
+    const workspaceMenu = page.locator("details.nav-menu");
+    const workspaceSummary = workspaceMenu.locator("summary");
+    await workspaceSummary.focus();
+    await page.keyboard.press("Enter");
+    await expect(workspaceMenu).toHaveAttribute("open", "");
+    const signOut = page.getByRole("button", { name: "Sign out" });
+    await expect(signOut).toBeVisible();
+    await mkdir(releaseScreenshotRoot, { recursive: true });
+    await signOut.screenshot({
+      path: resolve(releaseScreenshotRoot, "v0.1.1-global-sign-out.png"),
+      animations: "disabled"
+    });
+    await signOut.focus();
+    await expect(signOut).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/login\?returnTo=%2Fapp%2Ftoday$/u);
+    await expect(
+      page.getByRole("heading", { name: "Continue from the next useful step." })
+    ).toBeVisible();
+
+    staleClient = await playwrightRequest.newContext({
+      baseURL: E2E_BASE_URL,
+      extraHTTPHeaders: { Cookie: `codelift_session=${oldCookie?.value ?? "missing"}` }
+    });
+    const staleResponse = await staleClient.get("/api/v1/me");
+    expect(staleResponse.ok()).toBe(true);
+    expect(await staleResponse.json()).toEqual({ authenticated: false });
+    expect(staleResponse.headers()["set-cookie"]).toContain("Max-Age=0");
+
+    await page.getByLabel("Email address", { exact: true }).fill(account.email);
+    await page.getByLabel("Password", { exact: true }).fill(account.password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page).toHaveURL(/\/app\/today$/u);
+    await expect(page.getByRole("heading", { name: "Today’s mission" })).toBeVisible();
+
+    await page.route("**/api/v1/auth/logout", async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/problem+json",
+        body: JSON.stringify({
+          type: "https://codelift.ai/problems/logout-unavailable",
+          title: "Sign out unavailable",
+          status: 503,
+          detail: "CodeLift could not safely end the server session. Try signing out again.",
+          requestId: "logout-e2e-synthetic-reference"
+        })
+      });
+    });
+    await workspaceSummary.focus();
+    await page.keyboard.press("Enter");
+    await signOut.focus();
+    await page.keyboard.press("Enter");
+    const alert = workspaceMenu.getByRole("alert");
+    await expect(alert).toContainText(
+      "CodeLift could not safely end the server session. Try signing out again."
+    );
+    await expect(alert).toContainText("Support reference: logout-e2e-synthetic-reference");
+    await expect(alert).toBeFocused();
+    await expect(page).toHaveURL(/\/app\/today$/u);
+    await expect(page.getByRole("heading", { name: "Today’s mission" })).toBeVisible();
+    consumeExpectedBrowserError(
+      page,
+      "console: Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+    );
+    await page.unroute("**/api/v1/auth/logout");
+  } finally {
+    await staleClient?.dispose();
+    await cleanupSyntheticAccount(account);
+  }
+});
+
+test("11. password-reset email is generic and replaces the password while ending old sessions", async ({
+  browser,
+  page
+}, testInfo) => {
+  const account = accountFor(testInfo, "password-reset-email");
+  const absent = accountFor(testInfo, "password-reset-absent");
+  const replacementPassword = "Playwright replacement password!58";
+  const recoveryContext = await browser.newContext({ baseURL: E2E_BASE_URL });
+  const recoveryPage = await recoveryContext.newPage();
+  try {
+    await provisionAccount(page, account);
+    await recoveryPage.goto("/login");
+    await expect(
+      recoveryPage.getByRole("heading", { name: "Continue from the next useful step." })
+    ).toBeVisible();
+    await captureReleaseScreenshot(recoveryPage, "v0.1.1-login-email-alternatives.png");
+    await recoveryPage.getByRole("link", { name: "Forgot password?" }).click();
+    await expect(recoveryPage.getByRole("heading", { name: "Reset your password" })).toBeVisible();
+    await recoveryPage.getByLabel("Email address", { exact: true }).fill(account.email);
+    await recoveryPage.getByRole("button", { name: "Email password-reset link" }).click();
+    const genericStatus = recoveryPage.getByRole("status");
+    await expect(genericStatus).toHaveText(
+      "If an account exists for that email, we sent a password-reset link."
+    );
+    const resetMessage = await consumeE2EEmail({
+      purpose: "password-reset",
+      to: account.email
+    });
+    const resetUrl = new URL(resetMessage.resetUrl);
+    expect(resetUrl.origin).toBe(E2E_BASE_URL);
+    expect(resetUrl.pathname).toBe("/reset-password");
+    expect(resetUrl.search).toBe("");
+    expect(resetUrl.hash).toMatch(/^#token=[A-Za-z0-9_-]{43}$/u);
+    expect(resetMessage.resetUrl).not.toContain(account.email);
+
+    await recoveryPage.getByLabel("Email address", { exact: true }).fill(absent.email);
+    await recoveryPage.getByRole("button", { name: "Email password-reset link" }).click();
+    await expect(genericStatus).toHaveText(
+      "If an account exists for that email, we sent a password-reset link."
+    );
+    await expect(recoveryPage.getByLabel("Email address", { exact: true })).toHaveValue("");
+    await expectNoE2EEmail({ purpose: "password-reset", to: absent.email });
+    await captureReleaseScreenshot(recoveryPage, "v0.1.1-generic-reset-status.png");
+
+    await recoveryPage.goto(resetMessage.resetUrl);
+    await expect(recoveryPage).toHaveURL(/\/reset-password$/u);
+    expect(new URL(recoveryPage.url()).hash).toBe("");
+    await recoveryPage.getByLabel("New password", { exact: true }).fill(replacementPassword);
+    await recoveryPage
+      .getByLabel("Confirm new password", { exact: true })
+      .fill(replacementPassword);
+    await recoveryPage.getByRole("button", { name: "Reset password" }).click();
+    await expect(recoveryPage).toHaveURL(/\/login\?reset=1$/u);
+    await expect(
+      recoveryPage.getByText("Password reset complete. Sign in again with the new password.")
+    ).toBeVisible();
+
+    const oldSession = await page.request.get("/api/v1/me");
+    expect(await oldSession.json()).toEqual({ authenticated: false });
+    await recoveryPage.getByLabel("Email address", { exact: true }).fill(account.email);
+    await recoveryPage.getByLabel("Password", { exact: true }).fill(replacementPassword);
+    await recoveryPage.getByRole("button", { name: "Sign in" }).click();
+    await expect(recoveryPage).toHaveURL(/\/app\/today$/u);
+
+    await page.goto("/login");
+    await page.getByLabel("Email address", { exact: true }).fill(account.email);
+    await page.getByLabel("Password", { exact: true }).fill(account.password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByRole("alert")).toContainText(
+      "We couldn’t sign you in with those details."
+    );
+    await expect(page).toHaveURL(/\/login$/u);
+    consumeExpectedBrowserError(
+      page,
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    );
+  } finally {
+    await cleanupSyntheticAccount(account);
+    await recoveryContext.close();
+  }
+});
+
+test("12. emailed codes reject wrong, reused, and expired submissions and honor return-to", async ({
+  browser,
+  page
+}, testInfo) => {
+  const account = accountFor(testInfo, "email-code");
+  const expiredAccount = accountFor(testInfo, "email-code-expired");
+  const codeContext = await browser.newContext({ baseURL: E2E_BASE_URL });
+  const codePage = await codeContext.newPage();
+  const expiredSetupContext = await browser.newContext({ baseURL: E2E_BASE_URL });
+  const expiredSetupPage = await expiredSetupContext.newPage();
+  const expiredCodeContext = await browser.newContext({ baseURL: E2E_BASE_URL });
+  const expiredCodePage = await expiredCodeContext.newPage();
+  try {
+    await provisionAccount(page, account);
+    await codePage.goto("/login?returnTo=%2Fapp%2Faccount");
+    await codePage.getByLabel("Email address", { exact: true }).fill(account.email);
+    await codePage.getByRole("button", { name: "Email me a sign-in code" }).click();
+    await expect(
+      codePage.getByRole("heading", { name: "Sign in with an emailed code" })
+    ).toBeVisible();
+    const message = await consumeE2EEmail({ purpose: "email-login-code", to: account.email });
+    await codePage.setViewportSize({ width: 320, height: 900 });
+    expect(await horizontalOverflowMeasurement(codePage)).toMatchObject({
+      viewportWidth: 320,
+      rootClientWidth: 320,
+      documentOverflowPixels: 0,
+      bodyOverflowPixels: 0,
+      visibleOffenders: []
+    });
+    await captureReleaseScreenshot(codePage, "v0.1.1-email-code-empty-320.png");
+    expect(await codePage.locator("body").innerText()).not.toContain(account.email);
+
+    const wrongCode = message.code === "000000" ? "999999" : "000000";
+    await codePage.getByLabel("Sign-in code", { exact: true }).fill(wrongCode);
+    await codePage.getByRole("button", { name: "Sign in with code" }).click();
+    await expect(codePage.getByRole("alert")).toContainText(
+      "That code is invalid or expired. Request a new code and try again."
+    );
+    await expect(codePage.getByLabel("Sign-in code", { exact: true })).toHaveValue("");
+    await codePage.getByLabel("Sign-in code", { exact: true }).fill(message.code);
+    await codePage.getByRole("button", { name: "Sign in with code" }).click();
+    await expect(codePage).toHaveURL(/\/app\/account$/u);
+    await expect(codePage.getByRole("heading", { name: "Account and preferences" })).toBeVisible();
+
+    const protection = await responseJson<{ readonly csrfToken: string }>(
+      await codePage.request.get("/api/v1/auth/csrf"),
+      "Reused-code CSRF bootstrap"
+    );
+    const reused = await codePage.request.post("/api/v1/auth/email-code/verify", {
+      headers: {
+        Origin: E2E_BASE_URL,
+        "X-CSRF-Token": protection.csrfToken
+      },
+      data: { email: account.email, code: message.code }
+    });
+    expect(reused.status()).toBe(401);
+    expect(await reused.json()).toMatchObject({
+      status: 401,
+      detail: "That code is invalid or expired. Request a new code and try again."
+    });
+    expect(await reused.text()).not.toContain(message.code);
+
+    await provisionAccount(expiredSetupPage, expiredAccount);
+    await expiredCodePage.goto("/login");
+    await expiredCodePage.getByLabel("Email address", { exact: true }).fill(expiredAccount.email);
+    await expiredCodePage.getByRole("button", { name: "Email me a sign-in code" }).click();
+    const expiredMessage = await consumeE2EEmail({
+      purpose: "email-login-code",
+      to: expiredAccount.email
+    });
+    await expireLatestE2EEmailLoginCode(expiredAccount.email);
+    await expiredCodePage.getByLabel("Sign-in code", { exact: true }).fill(expiredMessage.code);
+    await expiredCodePage.getByRole("button", { name: "Sign in with code" }).click();
+    await expect(expiredCodePage.getByRole("alert")).toContainText(
+      "That code is invalid or expired. Request a new code and try again."
+    );
+    await expect(expiredCodePage).toHaveURL(/\/login\/email-code$/u);
+  } finally {
+    await cleanupSyntheticAccount(account);
+    await cleanupSyntheticAccount(expiredAccount);
+    await codeContext.close();
+    await expiredSetupContext.close();
+    await expiredCodeContext.close();
+  }
+});
+
+test("13. release visual and accessibility evidence covers responsive, theme, motion, and focus boundaries", async ({
   page
 }, testInfo) => {
   const account = accountFor(testInfo, "visual-accessibility");
@@ -774,7 +1063,7 @@ test("10. release visual and accessibility evidence covers responsive, theme, mo
   }
 });
 
-test("11. automated accessibility scans cover every private-pilot critical flow", async ({
+test("14. automated accessibility scans cover every private-pilot critical flow", async ({
   page
 }, testInfo) => {
   const account = accountFor(testInfo, "axe-critical-flows");
@@ -782,6 +1071,8 @@ test("11. automated accessibility scans cover every private-pilot critical flow"
   const publicRoutes = [
     "/login",
     `/register#invite=${invitation}`,
+    "/forgot-password",
+    "/login/email-code",
     "/privacy",
     "/terms",
     "/support"
@@ -808,7 +1099,7 @@ test("11. automated accessibility scans cover every private-pilot critical flow"
   }
 });
 
-test("12. @mobile-webkit invitation cookie, Today, logout, and return smoke", async ({
+test("15. @mobile-webkit invitation cookie, Today, logout, and return smoke", async ({
   page
 }, testInfo) => {
   const account = accountFor(testInfo, "mobile-webkit");
@@ -817,6 +1108,7 @@ test("12. @mobile-webkit invitation cookie, Today, logout, and return smoke", as
     await page.goto("/app/today");
     await expect(page.getByRole("heading", { name: "Today’s mission" })).toBeVisible();
     await page.goto("/app/account");
+    await page.locator("details.nav-menu > summary").click();
     await page.getByRole("button", { name: "Sign out" }).click();
     await expect(page).toHaveURL(/\/login\?returnTo=%2Fapp%2Faccount$/u);
     await page.getByLabel("Email address", { exact: true }).fill(account.email);

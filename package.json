@@ -22,7 +22,7 @@
     "test": "pnpm build:packages && pnpm -r --if-present test && pnpm python:test && node --test infra/scripts/release-source-state.test.mjs",
     "test:integration": "pnpm build:packages && pnpm --filter @codelift/api test:integration",
     "test:component-flow": "pnpm build:packages && pnpm --filter @codelift/web test:component-flow",
-    "test:e2e": "pnpm build:packages && pnpm e2e:typecheck && playwright test",
+    "test:e2e": "pnpm build:packages && pnpm e2e:typecheck && NODE_ENV=test playwright test",
     "e2e:typecheck": "tsc --noEmit -p e2e/tsconfig.json",
     "e2e:reset": "tsx e2e/support/reset-database.ts",
     "e2e:serve:api": "pnpm e2e:reset && pnpm --filter @codelift/api build && pnpm --filter @codelift/api start",

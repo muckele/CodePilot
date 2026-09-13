@@ -29,18 +29,24 @@ export interface BootstrappedApi {
   close(): Promise<void>;
 }
 
-function createTransactionalEmailProvider(config: ApiConfig["email"]): TransactionalEmailProvider {
+function createTransactionalEmailProvider(
+  config: ApiConfig["email"],
+  nodeEnv: ApiConfig["nodeEnv"]
+): TransactionalEmailProvider {
   if (config.provider === "resend") {
     return createResendTransactionalEmailProvider(config);
   }
   if (config.provider === "fake") {
-    return new FakeTransactionalEmailProvider();
+    return new FakeTransactionalEmailProvider({ nodeEnv, outboxDir: config.fakeOutboxDir });
   }
   return new DisabledTransactionalEmailProvider();
 }
 
 export async function bootstrapApi(options: BootstrapApiOptions): Promise<BootstrappedApi> {
-  const emailProvider = createTransactionalEmailProvider(options.config.email);
+  const emailProvider = createTransactionalEmailProvider(
+    options.config.email,
+    options.config.nodeEnv
+  );
   const curriculum = await initializeCurriculum(options.config.curriculumPath);
   const persistence = await initializePersistence(options.config.persistence);
   if (persistence.status === "ready" && curriculum.status === "ready") {

@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -75,6 +78,97 @@ describe("fake transactional email provider", () => {
       message: "Transactional email delivery failed."
     });
     expect(failing.messages).toHaveLength(1);
+  });
+
+  it("writes only synthetic test messages as atomic private outbox files", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codelift-email-outbox-provider-"));
+    try {
+      const provider = new FakeTransactionalEmailProvider({
+        nodeEnv: "test",
+        outboxDir: directory
+      });
+      await provider.sendLoginCode({
+        to: "e2e-email-code-0123456789ab@example.test",
+        code: "001204",
+        expiresAt: codeExpiry,
+        idempotencyKey: opaqueProviderIdempotencyKey("email-login-code", "64f000000000000000000002")
+      });
+
+      const files = await readdir(directory);
+      expect(files).toHaveLength(1);
+      expect(files[0]).toMatch(/^[a-f0-9-]+\.json$/u);
+      expect(files.some((file) => file.includes(".tmp"))).toBe(false);
+      expect((await stat(directory)).mode & 0o777).toBe(0o700);
+      const messagePath = join(directory, files[0] ?? "missing");
+      expect((await stat(messagePath)).mode & 0o777).toBe(0o600);
+      const message = JSON.parse(await readFile(messagePath, "utf8")) as Record<string, unknown>;
+      expect(message).toEqual({
+        version: 1,
+        purpose: "email-login-code",
+        to: "e2e-email-code-0123456789ab@example.test",
+        code: "001204",
+        expiresAt: codeExpiry.toISOString()
+      });
+      expect(JSON.stringify(message)).not.toContain("64f000000000000000000002");
+      expect(JSON.stringify(message)).not.toContain("codelift-v1-");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not publish an outbox record when the fake provider rejects delivery", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codelift-email-outbox-provider-"));
+    try {
+      const provider = new FakeTransactionalEmailProvider({
+        failWith: "unavailable",
+        nodeEnv: "test",
+        outboxDir: directory
+      });
+
+      await expect(
+        provider.sendLoginCode({
+          to: "e2e-email-code-0123456789ab@example.test",
+          code: "001204",
+          expiresAt: codeExpiry,
+          idempotencyKey: opaqueProviderIdempotencyKey(
+            "email-login-code",
+            "64f000000000000000000002"
+          )
+        })
+      ).rejects.toMatchObject({ reason: "unavailable" });
+      expect(await readdir(directory)).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an outbox outside test mode or for a non-synthetic recipient", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codelift-email-outbox-provider-"));
+    try {
+      expect(
+        () =>
+          new FakeTransactionalEmailProvider({
+            nodeEnv: "production",
+            outboxDir: directory
+          })
+      ).toThrow("test mode");
+
+      const provider = new FakeTransactionalEmailProvider({
+        nodeEnv: "test",
+        outboxDir: directory
+      });
+      await expect(
+        provider.sendPasswordReset({
+          to: recipient,
+          resetUrl,
+          expiresAt: resetExpiry,
+          idempotencyKey: opaqueProviderIdempotencyKey("password-reset", "64f000000000000000000001")
+        })
+      ).rejects.toThrow("synthetic");
+      expect(await readdir(directory)).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 

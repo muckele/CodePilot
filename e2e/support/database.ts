@@ -122,6 +122,10 @@ export async function deleteE2eSyntheticAccount(email: string): Promise<void> {
           { userId: user._id },
           { session: databaseSession }
         );
+        await runtime.models.EmailLoginCode.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
         const deleted = await runtime.models.User.deleteOne(
           { _id: user._id, email },
           { session: databaseSession }
@@ -138,12 +142,34 @@ export async function deleteE2eSyntheticAccount(email: string): Promise<void> {
   }
 }
 
+export async function expireLatestE2EEmailLoginCode(email: string): Promise<void> {
+  if (!syntheticAccountEmail.test(email)) {
+    throw new Error("E2E expiry requires an explicit synthetic Playwright account email.");
+  }
+  const runtime = await openE2ePersistence();
+  try {
+    const user = await runtime.models.User.findOne({ email }).select({ _id: 1 }).lean();
+    if (user === null) throw new Error("Cannot expire a code for a missing synthetic account.");
+    const result = await runtime.models.EmailLoginCode.findOneAndUpdate(
+      { userId: user._id, sentAt: { $ne: null }, revokedAt: null, consumedAt: null },
+      { $set: { expiresAt: new Date(Date.now() - 1_000) } },
+      { sort: { createdAt: -1 }, returnDocument: "after" }
+    );
+    if (result === null) {
+      throw new Error("Expected one delivered synthetic sign-in code to expire.");
+    }
+  } finally {
+    await closePersistence(runtime);
+  }
+}
+
 export interface UserOwnedCounts {
   readonly user: number;
   readonly sessions: number;
   readonly userActivities: number;
   readonly invitations: number;
   readonly passwordResets: number;
+  readonly emailLoginCodes: number;
   readonly progress: number;
   readonly reflections: number;
   readonly xpEvents: number;
@@ -170,6 +196,7 @@ export async function userOwnedCounts(userId: string): Promise<UserOwnedCounts> 
       userActivities,
       invitations,
       passwordResets,
+      emailLoginCodes,
       progress,
       reflections,
       xpEvents,
@@ -191,6 +218,7 @@ export async function userOwnedCounts(userId: string): Promise<UserOwnedCounts> 
       runtime.models.UserActivity.countDocuments({ userId }),
       runtime.models.Invitation.countDocuments({ consumedByUserId: userId }),
       runtime.models.PasswordReset.countDocuments({ userId }),
+      runtime.models.EmailLoginCode.countDocuments({ userId }),
       runtime.models.Progress.countDocuments({ userId }),
       runtime.models.Reflection.countDocuments({ userId }),
       runtime.models.XpEvent.countDocuments({ userId }),
@@ -213,6 +241,7 @@ export async function userOwnedCounts(userId: string): Promise<UserOwnedCounts> 
       userActivities,
       invitations,
       passwordResets,
+      emailLoginCodes,
       progress,
       reflections,
       xpEvents,

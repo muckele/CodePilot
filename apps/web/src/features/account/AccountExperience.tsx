@@ -608,7 +608,9 @@ function EmailCodePage({
           </form>
         ) : (
           <>
-            <p className="email-code-destination">Code requested for {email}.</p>
+            <p className="email-code-destination">
+              Check your email, then enter the six-digit code.
+            </p>
             <form className="account-form" onSubmit={verifyCode} noValidate>
               <Field id="email-login-code" label="Sign-in code">
                 <input

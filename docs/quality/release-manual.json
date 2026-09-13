@@ -1,9 +1,9 @@
 {
-  "evidenceVersion": 2,
-  "observedAt": "2026-09-12T03:58:28.065Z",
-  "observationSourceRevision": "795d24001d1d7db8aeb9ebfe0865bbe275e0e990",
-  "sourceDigest": "d0c80fadafd62fe2c2aaac3a3f6181eba0c7316a2c6ef518125a86768348fecc",
-  "reviewProfile": "manual-repository-playwright-chromium",
+  "evidenceVersion": 3,
+  "observedAt": "2026-09-13T07:04:45.000Z",
+  "observationSourceRevision": "a72ce7c0d42b91bdbebbc929bc7b1c55172be952",
+  "sourceDigest": "8efbf3ed42dc09ee56657192abab8cbd1d02fa387767c21000729d720d133861",
+  "reviewProfile": "manual-repository-playwright-chromium-mobile-webkit",
   "reviewIdentity": "fresh synthetic example.test accounts only",
   "browser": "Chromium from the repository Playwright installation",
   "browserPlugin": "not available",
@@ -27,6 +27,18 @@
   "plannerApproval": true,
   "accountDeletion": true,
   "errorRecovery": true,
+  "passwordLogin": true,
+  "globalSignOut": true,
+  "failedLogoutTruthful": true,
+  "passwordResetEmail": true,
+  "passwordResetGeneric": true,
+  "passwordResetSessionInvalidation": true,
+  "emailLoginCode": true,
+  "emailLoginWrongRejected": true,
+  "emailLoginReusedRejected": true,
+  "emailLoginExpiredRejected": true,
+  "authReturnTo": true,
+  "fakeEmailOutboxGuarded": true,
   "noConsoleErrors": true,
   "pagesVerified": [
     "Today",
@@ -40,6 +52,9 @@
     "Planner",
     "Evals",
     "Settings",
+    "Login",
+    "Forgot password",
+    "Email sign-in code",
     "Tasks",
     "Visual gallery",
     "Development Admin"
@@ -160,8 +175,8 @@
   },
   "behavioralEvidence": {
     "completeManualObservation": {
-      "startedAt": "2026-09-12T03:57:58.291Z",
-      "completedAt": "2026-09-12T03:58:28.065Z",
+      "startedAt": "2026-09-13T07:03:54.000Z",
+      "completedAt": "2026-09-13T07:04:45.000Z",
       "passed": true,
       "wideSurfacesPassed": 14,
       "narrowSurfacesPassed": 14,
@@ -215,6 +230,18 @@
       "unexpectedRequestFailures": 0,
       "genericMutationFailuresRemainFatal": true
     },
+    "selfServiceAccountAccess": {
+      "passwordLogin": "released password authentication remained available after account-access additions",
+      "globalSignOut": "keyboard activation from Today ended the session and the prior cookie was rejected",
+      "failedLogoutTruthful": "a scoped server failure kept the authenticated route visible and focused its alert",
+      "passwordResetEmail": "a synthetic one-time reset message completed password replacement through a fragment credential that was scrubbed before submission",
+      "passwordResetGeneric": "existing and absent accounts produced the same public status while only the existing synthetic account created an outbox record",
+      "passwordResetSessionInvalidation": "password replacement invalidated the prior session and prior password while the replacement password authenticated",
+      "emailLoginCode": "a synthetic delivered code created a session and honored the protected return destination",
+      "emailLoginFailureBoundaries": "wrong, reused, and expired code submissions were rejected with generic public behavior",
+      "fakeEmailOutboxGuarded": "test-only private atomic records were consumed once, removed immediately, and cleaned after every journey",
+      "browserMatrix": "all twenty-one repository journeys passed across Chromium and mobile WebKit"
+    },
     "focusChecks": [
       "account-deletion validation error focused its alert",
       "RAG deletion confirmation focused the destructive confirmation action",
@@ -233,7 +260,11 @@
     "docs/quality/screenshots/release-today-wide.png",
     "docs/quality/screenshots/release-today-320.png",
     "docs/quality/screenshots/release-dark-reduced.png",
-    "docs/quality/screenshots/release-rag-citations.png"
+    "docs/quality/screenshots/release-rag-citations.png",
+    "docs/quality/screenshots/v0.1.1-login-email-alternatives.png",
+    "docs/quality/screenshots/v0.1.1-generic-reset-status.png",
+    "docs/quality/screenshots/v0.1.1-email-code-empty-320.png",
+    "docs/quality/screenshots/v0.1.1-global-sign-out.png"
   ],
   "openFindings": []
 }

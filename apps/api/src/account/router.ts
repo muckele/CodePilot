@@ -266,6 +266,8 @@ export function createAccountRouter(options: {
 
   const service = options.runtime.service;
   const emailRequestTiming = options.emailRequestTiming ?? defaultEmailRequestTiming;
+  const csrfLimit =
+    options.config.nodeEnv === "test" && options.config.email.fakeOutboxDir !== null ? 600 : 60;
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1_000,
     limit: 30,
@@ -282,7 +284,7 @@ export function createAccountRouter(options: {
   });
   const csrfLimiter = rateLimit({
     windowMs: 15 * 60 * 1_000,
-    limit: 60,
+    limit: csrfLimit,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     handler(_request, response) {

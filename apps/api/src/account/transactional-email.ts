@@ -1,4 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { chmod, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { accountAccessTokenSchema, emailLoginCodeSchema } from "@codelift/contracts";
 
 export type TransactionalEmailFailureReason =
@@ -42,6 +45,24 @@ export interface RenderedTransactionalEmail {
 export type TransactionalEmailMessage =
   | ({ readonly purpose: "password-reset" } & PasswordResetEmailInput)
   | ({ readonly purpose: "email-login-code" } & LoginCodeEmailInput);
+
+export type FakeTransactionalEmailOutboxRecord =
+  | {
+      readonly version: 1;
+      readonly purpose: "password-reset";
+      readonly to: string;
+      readonly resetUrl: string;
+      readonly expiresAt: string;
+    }
+  | {
+      readonly version: 1;
+      readonly purpose: "email-login-code";
+      readonly to: string;
+      readonly code: string;
+      readonly expiresAt: string;
+    };
+
+const syntheticOutboxRecipient = /^e2e-[a-z0-9][a-z0-9-]*-[a-f0-9]{12}@example\.test$/u;
 
 function assertValidExpiry(expiresAt: Date): void {
   if (!(expiresAt instanceof Date) || !Number.isFinite(expiresAt.getTime())) {
@@ -151,9 +172,34 @@ export function opaqueProviderIdempotencyKey(
 export class FakeTransactionalEmailProvider implements TransactionalEmailProvider {
   readonly #messages: TransactionalEmailMessage[] = [];
   readonly #failWith: TransactionalEmailFailureReason | null;
+  readonly #outboxDir: string | null;
 
-  constructor(options: { failWith?: TransactionalEmailFailureReason } = {}) {
+  constructor(
+    options: {
+      failWith?: TransactionalEmailFailureReason;
+      nodeEnv?: string;
+      outboxDir?: string | null;
+    } = {}
+  ) {
     this.#failWith = options.failWith ?? null;
+    this.#outboxDir = options.outboxDir ?? null;
+    if (this.#outboxDir !== null) {
+      if (options.nodeEnv !== "test") {
+        throw new Error("The fake email outbox is available only in test mode.");
+      }
+      const resolvedOutbox = resolve(this.#outboxDir);
+      const resolvedTemporaryRoot = resolve(tmpdir());
+      const relativePath = relative(resolvedTemporaryRoot, resolvedOutbox);
+      if (
+        !isAbsolute(this.#outboxDir) ||
+        relativePath === "" ||
+        relativePath === ".." ||
+        relativePath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+        isAbsolute(relativePath)
+      ) {
+        throw new Error("The fake email outbox must be a private temporary test directory.");
+      }
+    }
   }
 
   get messages(): readonly TransactionalEmailMessage[] {
@@ -163,11 +209,25 @@ export class FakeTransactionalEmailProvider implements TransactionalEmailProvide
   async sendPasswordReset(input: PasswordResetEmailInput): Promise<void> {
     this.#messages.push({ purpose: "password-reset", ...input });
     this.#finish();
+    await this.#writeOutbox({
+      version: 1,
+      purpose: "password-reset",
+      to: input.to,
+      resetUrl: input.resetUrl,
+      expiresAt: input.expiresAt.toISOString()
+    });
   }
 
   async sendLoginCode(input: LoginCodeEmailInput): Promise<void> {
     this.#messages.push({ purpose: "email-login-code", ...input });
     this.#finish();
+    await this.#writeOutbox({
+      version: 1,
+      purpose: "email-login-code",
+      to: input.to,
+      code: input.code,
+      expiresAt: input.expiresAt.toISOString()
+    });
   }
 
   clear(): void {
@@ -177,6 +237,49 @@ export class FakeTransactionalEmailProvider implements TransactionalEmailProvide
   #finish(): void {
     if (this.#failWith !== null) {
       throw new TransactionalEmailError(this.#failWith);
+    }
+  }
+
+  async #writeOutbox(message: FakeTransactionalEmailOutboxRecord): Promise<void> {
+    if (this.#outboxDir === null) return;
+    if (!syntheticOutboxRecipient.test(message.to)) {
+      throw new Error("The fake email outbox accepts only synthetic test recipients.");
+    }
+
+    await mkdir(this.#outboxDir, { recursive: true, mode: 0o700 });
+    await chmod(this.#outboxDir, 0o700);
+    const [directory, resolvedDirectory, resolvedTemporaryRoot] = await Promise.all([
+      lstat(this.#outboxDir),
+      realpath(this.#outboxDir),
+      realpath(tmpdir())
+    ]);
+    const relativePath = relative(resolvedTemporaryRoot, resolvedDirectory);
+    if (
+      !directory.isDirectory() ||
+      directory.isSymbolicLink() ||
+      relativePath === "" ||
+      relativePath === ".." ||
+      relativePath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+      isAbsolute(relativePath)
+    ) {
+      throw new Error("The fake email outbox is not a private temporary directory.");
+    }
+
+    const identifier = randomUUID();
+    const temporaryPath = join(this.#outboxDir, `.${identifier}.tmp`);
+    const finalPath = join(this.#outboxDir, `${identifier}.json`);
+    let file: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      file = await open(temporaryPath, "wx", 0o600);
+      await file.writeFile(`${JSON.stringify(message)}\n`, "utf8");
+      await file.sync();
+      await file.close();
+      file = undefined;
+      await rename(temporaryPath, finalPath);
+    } catch (error: unknown) {
+      await file?.close().catch(() => undefined);
+      await unlink(temporaryPath).catch(() => undefined);
+      throw error;
     }
   }
 }
