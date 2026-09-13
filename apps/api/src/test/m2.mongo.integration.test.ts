@@ -7,8 +7,9 @@ import type {
 import { fileURLToPath } from "node:url";
 import { Types } from "mongoose";
 import request, { type Agent } from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createApp } from "../app.js";
 import { bootstrapApi, type BootstrappedApi } from "../bootstrap.js";
 import {
   issueInvitation,
@@ -16,6 +17,11 @@ import {
   revokeUnusedInvitation
 } from "../account/access-operator.js";
 import { AccountService } from "../account/service.js";
+import { digestOpaqueToken } from "../account/security.js";
+import {
+  FakeTransactionalEmailProvider,
+  type TransactionalEmailProvider
+} from "../account/transactional-email.js";
 import type { ApiConfig } from "../config.js";
 import type { StructuredRequestLogger } from "../middleware/request-context.js";
 import { buildPilotMetrics } from "../metrics/pilot-metrics.js";
@@ -217,6 +223,373 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
     await runtime.close();
   });
 
+  function createEmailTestApp(
+    provider: TransactionalEmailProvider,
+    timing: { nowMs(): number; sleep(milliseconds: number): Promise<void> }
+  ) {
+    if (runtime.persistence.status !== "ready" || runtime.account.status !== "ready") {
+      throw new Error("The real Mongo account runtime is required.");
+    }
+    const config = {
+      ...configFor(guardedTestUri()),
+      email: {
+        provider: "fake" as const,
+        from: null,
+        replyTo: null,
+        requestTimeoutMs: 5_000,
+        resendApiKey: null,
+        loginCodePepper: Buffer.alloc(32, 0xa5),
+        fakeOutboxDir: null
+      }
+    };
+    const options = {
+      config,
+      curriculum: runtime.curriculum,
+      account: { ...runtime.account, emailProvider: provider },
+      logger: silentLogger,
+      emailRequestTiming: timing
+    };
+    return createApp(options);
+  }
+
+  it("requests one delivery-gated reset email while keeping missing accounts generic", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const provider = new FakeTransactionalEmailProvider();
+    const sleeps: number[] = [];
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+      }
+    });
+    const email = "reset-request@example.com";
+    await register(request.agent(emailApp), email);
+    const priorOperatorReset = await issuePasswordReset({
+      models,
+      email,
+      issuer: "integration-test-operator",
+      ttlMs: 60 * 60 * 1_000
+    });
+
+    const browser = request.agent(emailApp);
+    const protection = await csrf(browser);
+    const response = await browser
+      .post("/api/v1/auth/password-reset/request")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", protection.csrfToken)
+      .send({ email });
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({
+      message: "If an account exists for that email, we sent a password-reset link."
+    });
+    expect(provider.messages).toHaveLength(1);
+    const message = provider.messages[0];
+    expect(message?.purpose).toBe("password-reset");
+    if (message?.purpose !== "password-reset") {
+      throw new Error("Expected one password-reset message.");
+    }
+    const resetUrl = new URL(message.resetUrl);
+    expect(resetUrl.origin).toBe(webOrigin);
+    expect(resetUrl.pathname).toBe("/reset-password");
+    expect(resetUrl.search).toBe("");
+    expect(new URLSearchParams(resetUrl.hash.slice(1)).get("token")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    const reset = await models.PasswordReset.findOne({ deliveryMethod: "email" }).lean();
+    expect(reset).toMatchObject({
+      sentAt: expect.any(Date),
+      consumedAt: null,
+      revokedAt: null,
+      createdBy: "self-service-email"
+    });
+    if (reset === null) throw new Error("Expected one email password reset.");
+    expect(reset.expiresAt.getTime() - reset.createdAt.getTime()).toBe(60 * 60 * 1_000);
+    expect(await models.PasswordReset.findById(priorOperatorReset.id).lean()).toMatchObject({
+      revokedAt: expect.any(Date)
+    });
+    expect(sleeps).toEqual([750]);
+
+    const missingBrowser = request.agent(emailApp);
+    const missingProtection = await csrf(missingBrowser);
+    const missing = await missingBrowser
+      .post("/api/v1/auth/password-reset/request")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", missingProtection.csrfToken)
+      .send({ email: "missing-reset@example.com" });
+    expect(missing.status).toBe(202);
+    expect(missing.headers["content-type"]).toBe(response.headers["content-type"]);
+    expect(missing.body).toEqual(response.body);
+    expect(provider.messages).toHaveLength(1);
+    expect(sleeps).toEqual([750, 750]);
+    expect(
+      await models.PilotAggregate.findOne({ event: "password_reset_requested" }).lean()
+    ).toMatchObject({ count: 2 });
+    expect(
+      await models.PilotAggregate.findOne({ event: "password_reset_email_sent" }).lean()
+    ).toMatchObject({ count: 1 });
+  });
+
+  it.each(["zero-match", "persistence-error"] as const)(
+    "fails reset delivery closed after provider acceptance and %s acknowledgement",
+    async (failure) => {
+      if (runtime.persistence.status !== "ready") {
+        throw new Error("The real Mongo runtime is required.");
+      }
+      const models = runtime.persistence.models;
+      const provider = new FakeTransactionalEmailProvider();
+      const emailApp = createEmailTestApp(provider, {
+        nowMs: () => 0,
+        sleep: async () => undefined
+      });
+      const email = `${failure}-reset@example.com`;
+      await register(request.agent(emailApp), email);
+
+      if (runtime.account.status !== "ready") {
+        throw new Error("The real Mongo account runtime is required.");
+      }
+      const service = runtime.account.service;
+      const originalAcknowledge = service.acknowledgePasswordResetDelivery.bind(service);
+      const acknowledgementSpy = vi.spyOn(service, "acknowledgePasswordResetDelivery");
+      if (failure === "zero-match") {
+        acknowledgementSpy.mockResolvedValueOnce(false);
+      } else {
+        acknowledgementSpy.mockImplementationOnce(async (resetId) => {
+          expect(await originalAcknowledge(resetId)).toBe(true);
+          throw new Error("synthetic post-commit acknowledgement failure");
+        });
+      }
+
+      const browser = request.agent(emailApp);
+      const protection = await csrf(browser);
+      const response = await browser
+        .post("/api/v1/auth/password-reset/request")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", protection.csrfToken)
+        .send({ email });
+      acknowledgementSpy.mockRestore();
+
+      expect(response.status).toBe(202);
+      expect(response.body).toEqual({
+        message: "If an account exists for that email, we sent a password-reset link."
+      });
+      expect(provider.messages).toHaveLength(1);
+      const firstMessage = provider.messages[0];
+      if (firstMessage?.purpose !== "password-reset") {
+        throw new Error("Expected one password-reset message.");
+      }
+      const firstReset = await models.PasswordReset.findOne({ deliveryMethod: "email" }).lean();
+      expect(firstReset).toMatchObject({
+        sentAt: failure === "zero-match" ? null : expect.any(Date),
+        revokedAt: expect.any(Date)
+      });
+      expect(
+        await models.PilotAggregate.findOne({ event: "password_reset_email_sent" }).lean()
+      ).toBeNull();
+      expect(
+        await models.PilotAggregate.findOne({ event: "password_reset_email_failed" }).lean()
+      ).toMatchObject({ count: 1 });
+
+      const rejectedBrowser = request.agent(emailApp);
+      const rejectedProtection = await csrf(rejectedBrowser);
+      const firstToken = new URLSearchParams(new URL(firstMessage.resetUrl).hash.slice(1)).get(
+        "token"
+      );
+      const rejected = await rejectedBrowser
+        .post("/api/v1/auth/reset-password")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", rejectedProtection.csrfToken)
+        .send({ token: firstToken, password: "Replacement horse battery staple!" });
+      expect(rejected.status).toBe(400);
+      expect(provider.messages).toHaveLength(1);
+
+      const retryBrowser = request.agent(emailApp);
+      const retryProtection = await csrf(retryBrowser);
+      const retry = await retryBrowser
+        .post("/api/v1/auth/password-reset/request")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", retryProtection.csrfToken)
+        .send({ email });
+      expect(retry.status).toBe(202);
+      expect(provider.messages).toHaveLength(2);
+      expect(
+        await models.PasswordReset.countDocuments({
+          deliveryMethod: "email",
+          sentAt: { $ne: null },
+          revokedAt: null
+        })
+      ).toBe(1);
+    }
+  );
+
+  it("contains a runtime provider outage to the generic reset-email operation", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const provider = new FakeTransactionalEmailProvider({ failWith: "unavailable" });
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const email = "provider-outage-reset@example.com";
+    await register(request.agent(emailApp), email);
+    const browser = request.agent(emailApp);
+    const protection = await csrf(browser);
+
+    const response = await browser
+      .post("/api/v1/auth/password-reset/request")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", protection.csrfToken)
+      .send({ email });
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({
+      message: "If an account exists for that email, we sent a password-reset link."
+    });
+    expect(provider.messages).toHaveLength(1);
+    expect(await models.PasswordReset.findOne({ deliveryMethod: "email" }).lean()).toMatchObject({
+      sentAt: null,
+      revokedAt: expect.any(Date)
+    });
+    expect(
+      await models.PilotAggregate.findOne({ event: "password_reset_email_failed" }).lean()
+    ).toMatchObject({ count: 1 });
+  });
+
+  it("ends issuance transactions before provider and asynchronous timing work", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const email = "reset-transaction-boundary@example.com";
+    await register(
+      request.agent(
+        createEmailTestApp(new FakeTransactionalEmailProvider(), {
+          nowMs: () => 0,
+          sleep: async () => undefined
+        })
+      ),
+      email
+    );
+
+    let issuanceSessionEnded = false;
+    const originalStartSession = models.User.db.startSession.bind(models.User.db);
+    const startSessionSpy = vi
+      .spyOn(models.User.db, "startSession")
+      .mockImplementation(async () => {
+        const session = await originalStartSession();
+        const originalEndSession = session.endSession.bind(session);
+        session.endSession = async () => {
+          await originalEndSession();
+          issuanceSessionEnded = true;
+        };
+        return session;
+      });
+    const events: string[] = [];
+    let releaseFloor: () => void = () => undefined;
+    const floorGate = new Promise<void>((resolve) => {
+      releaseFloor = resolve;
+    });
+    let floorStarted: () => void = () => undefined;
+    const floorStart = new Promise<void>((resolve) => {
+      floorStarted = resolve;
+    });
+    const provider: TransactionalEmailProvider = {
+      async sendPasswordReset() {
+        expect(issuanceSessionEnded).toBe(true);
+        events.push("provider");
+      },
+      async sendLoginCode() {
+        throw new Error("Unexpected login-code send.");
+      }
+    };
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async (milliseconds) => {
+        expect(milliseconds).toBe(750);
+        expect(issuanceSessionEnded).toBe(true);
+        expect(
+          await models.PasswordReset.findOne({ deliveryMethod: "email", sentAt: { $ne: null } })
+        ).not.toBeNull();
+        events.push("floor");
+        floorStarted();
+        await floorGate;
+      }
+    });
+    const browser = request.agent(emailApp);
+    const protection = await csrf(browser);
+    const responsePromise = browser
+      .post("/api/v1/auth/password-reset/request")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", protection.csrfToken)
+      .send({ email })
+      .then((response) => response);
+
+    await floorStart;
+    let unrelatedTimerRan = false;
+    await new Promise<void>((resolve) => {
+      setTimeout(() => {
+        unrelatedTimerRan = true;
+        resolve();
+      }, 0);
+    });
+    expect(unrelatedTimerRan).toBe(true);
+    expect(events).toEqual(["provider", "floor"]);
+    releaseFloor();
+    expect((await responsePromise).status).toBe(202);
+    startSessionSpy.mockRestore();
+  });
+
+  it("enforces reset-request cooldown, IP limits, and disabled capability", async () => {
+    const provider = new FakeTransactionalEmailProvider();
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const email = "reset-bounds@example.com";
+    await register(request.agent(emailApp), email);
+
+    const browser = request.agent(emailApp);
+    const protection = await csrf(browser);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await browser
+        .post("/api/v1/auth/password-reset/request")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", protection.csrfToken)
+        .send({ email });
+      expect(response.status).toBe(202);
+    }
+    expect(provider.messages).toHaveLength(1);
+    const limited = await browser
+      .post("/api/v1/auth/password-reset/request")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", protection.csrfToken)
+      .send({ email });
+    expect(limited.status).toBe(429);
+
+    if (runtime.account.status !== "ready") {
+      throw new Error("The real Mongo account runtime is required.");
+    }
+    const disabledIssueSpy = vi.spyOn(runtime.account.service, "issueSelfServicePasswordReset");
+    const disabledBrowser = request.agent(runtime.app);
+    const disabledProtection = await csrf(disabledBrowser);
+    const disabled = await disabledBrowser
+      .post("/api/v1/auth/password-reset/request")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", disabledProtection.csrfToken)
+      .send({ email: "missing-disabled@example.com" });
+    expect(disabled.status).toBe(503);
+    expect(disabled.body).toMatchObject({
+      type: "https://codelift.ai/problems/email-self-service-unavailable",
+      status: 503
+    });
+    expect(disabledIssueSpy).not.toHaveBeenCalled();
+    disabledIssueSpy.mockRestore();
+  });
+
   it("initializes email-code indexes idempotently without rewriting v0.1 reset records", async () => {
     if (runtime.persistence.status !== "ready") {
       throw new Error("The real Mongo runtime is required.");
@@ -268,6 +641,71 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
     const legacyReset = await models.PasswordReset.collection.findOne({ _id: legacyResetId });
     expect(legacyReset).not.toHaveProperty("deliveryMethod");
     expect(legacyReset).not.toHaveProperty("sentAt");
+  });
+
+  it("accepts v0.1 and operator resets while rejecting an unacknowledged email reset", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const emailApp = createEmailTestApp(new FakeTransactionalEmailProvider(), {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const email = "reset-compatibility@example.com";
+    const password = "Correct horse battery staple!";
+    const nextPassword = "Replacement horse battery staple!";
+    const registered = await register(request.agent(emailApp), email, password);
+    const historicalToken = "h".repeat(43);
+    await models.PasswordReset.create({
+      tokenHash: digestOpaqueToken(historicalToken),
+      purpose: "password_reset",
+      userId: registered.user.id,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+      consumedAt: null,
+      revokedAt: null,
+      createdBy: "v0.1-fixture"
+    });
+
+    const historicalBrowser = request.agent(emailApp);
+    const historicalProtection = await csrf(historicalBrowser);
+    const historical = await historicalBrowser
+      .post("/api/v1/auth/reset-password")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", historicalProtection.csrfToken)
+      .send({ token: historicalToken, password: nextPassword });
+    expect(historical.status).toBe(204);
+
+    const operator = await issuePasswordReset({
+      models,
+      email,
+      issuer: "integration-test-operator",
+      ttlMs: 60 * 60 * 1_000
+    });
+    expect((await models.PasswordReset.findById(operator.id).lean())?.deliveryMethod).toBe(
+      "operator"
+    );
+
+    const pendingToken = "p".repeat(43);
+    await models.PasswordReset.create({
+      tokenHash: digestOpaqueToken(pendingToken),
+      purpose: "password_reset",
+      userId: registered.user.id,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+      consumedAt: null,
+      revokedAt: null,
+      createdBy: "self-service-email",
+      deliveryMethod: "email",
+      sentAt: null
+    });
+    const pendingBrowser = request.agent(emailApp);
+    const pendingProtection = await csrf(pendingBrowser);
+    const pending = await pendingBrowser
+      .post("/api/v1/auth/reset-password")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", pendingProtection.csrfToken)
+      .send({ token: pendingToken, password });
+    expect(pending.status).toBe(400);
   });
 
   it("atomically gates invitations and resets passwords without token storage, replay, or surviving sessions", async () => {
@@ -453,6 +891,8 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
       const storedReset = await models.PasswordReset.findById(reset.id).select("+tokenHash");
       expect(storedReset?.tokenHash).toMatch(/^[0-9a-f]{64}$/);
       expect(storedReset?.tokenHash).not.toContain(reset.token);
+      expect(storedReset?.deliveryMethod).toBe("operator");
+      expect(storedReset?.sentAt).toBeUndefined();
 
       const resetBrowser = request.agent(accessRuntime.app);
       const resetProtection = await csrf(resetBrowser);

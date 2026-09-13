@@ -29,6 +29,10 @@ import type {
 } from "../persistence/models.js";
 import { withActiveAccountWrite } from "../persistence/active-account-write.js";
 import {
+  issueSelfServicePasswordReset,
+  type SelfServicePasswordResetResult
+} from "./access-operator.js";
+import {
   createDummyPasswordHash,
   createOpaqueToken,
   digestOpaqueToken,
@@ -637,7 +641,14 @@ export class AccountService {
             purpose: "password_reset",
             expiresAt: { $gt: now },
             consumedAt: null,
-            revokedAt: null
+            revokedAt: null,
+            $or: [
+              { deliveryMethod: { $ne: "email" } },
+              {
+                deliveryMethod: "email",
+                sentAt: { $exists: true, $ne: null }
+              }
+            ]
           },
           { $set: { consumedAt: now } },
           { session: databaseSession, returnDocument: "after" }
@@ -674,6 +685,44 @@ export class AccountService {
     } finally {
       await databaseSession.endSession();
     }
+  }
+
+  async issueSelfServicePasswordReset(email: string): Promise<SelfServicePasswordResetResult> {
+    return issueSelfServicePasswordReset({
+      models: this.#models,
+      email,
+      ttlMs: this.#registrationConfig.passwordResetTtlMs,
+      cooldownMs: 60_000,
+      now: this.#now()
+    });
+  }
+
+  async acknowledgePasswordResetDelivery(resetId: string): Promise<boolean> {
+    const now = this.#now();
+    const result = await this.#models.PasswordReset.updateOne(
+      {
+        _id: resetId,
+        deliveryMethod: "email",
+        sentAt: null,
+        expiresAt: { $gt: now },
+        consumedAt: null,
+        revokedAt: null
+      },
+      { $set: { sentAt: now } }
+    );
+    return result.modifiedCount === 1;
+  }
+
+  async revokePasswordResetDelivery(resetId: string): Promise<void> {
+    await this.#models.PasswordReset.updateOne(
+      {
+        _id: resetId,
+        deliveryMethod: "email",
+        consumedAt: null,
+        revokedAt: null
+      },
+      { $set: { revokedAt: this.#now() } }
+    );
   }
 
   async authenticate(rawSessionToken: string | null): Promise<{
@@ -858,6 +907,14 @@ export class AccountService {
       { $inc: { count: 1 } },
       { upsert: true, setDefaultsOnInsert: true }
     );
+  }
+
+  async recordPilotEventBestEffort(event: PilotAggregateEvent): Promise<void> {
+    try {
+      await this.recordPilotEvent(event);
+    } catch {
+      // Authentication behavior does not depend on privacy-safe aggregate telemetry.
+    }
   }
 
   async today(userId: string): Promise<AuthenticatedTodayResponse> {

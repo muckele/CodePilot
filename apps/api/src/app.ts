@@ -3,7 +3,11 @@ import { curriculumDayResponseSchema, type CurriculumDayResponse } from "@codeli
 import cors from "cors";
 import express, { type Request, type RequestHandler, type Response } from "express";
 import helmet from "helmet";
-import { createAccountRouter, type AccountRuntime } from "./account/router.js";
+import {
+  createAccountRouter,
+  type AccountRuntime,
+  type EmailRequestTiming
+} from "./account/router.js";
 import { DisabledTransactionalEmailProvider } from "./account/transactional-email.js";
 import type { ApiConfig } from "./config.js";
 import type { CurriculumRuntime } from "./curriculum/runtime.js";
@@ -25,6 +29,7 @@ export interface CreateAppOptions {
   readonly curriculum: CurriculumRuntime;
   readonly account?: AccountRuntime;
   readonly logger?: StructuredRequestLogger;
+  readonly emailRequestTiming?: EmailRequestTiming;
 }
 
 function parseDayNumber(value: string): number {
@@ -194,7 +199,10 @@ export function createApp(options: CreateAppOptions): express.Express {
       runtime: options.account ?? {
         status: "unavailable",
         emailProvider: new DisabledTransactionalEmailProvider()
-      }
+      },
+      ...(options.emailRequestTiming === undefined
+        ? {}
+        : { emailRequestTiming: options.emailRequestTiming })
     })
   );
 
