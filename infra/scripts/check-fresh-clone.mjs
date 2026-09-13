@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
+import { createFreshCloneEnvironment } from "./fresh-clone-environment.mjs";
 import { fullSourceStatusArguments } from "./release-source-state.mjs";
 
 const root = process.cwd();
@@ -107,13 +108,7 @@ try {
     throw new Error("The isolated clone revision does not match the release source revision.");
   }
 
-  const cloneEnvironment = {
-    ...process.env,
-    CI: "true",
-    COREPACK_ENABLE_PROJECT_SPEC: "0",
-    PNPM_DISABLE_SELF_UPDATE_CHECK: "1",
-    pnpm_config_verify_deps_before_run: "false"
-  };
+  const cloneEnvironment = createFreshCloneEnvironment(process.env);
   if (pnpmCli === undefined || pnpmCli.trim() === "") {
     throw new Error("npm_execpath is required so the fresh clone uses pinned pnpm.");
   }
