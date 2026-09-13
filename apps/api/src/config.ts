@@ -394,7 +394,7 @@ function createEmailConfig(environment: NodeJS.ProcessEnv, nodeEnv: ApiEnvironme
     provider,
     from: parseMailbox(environment.EMAIL_FROM, "EMAIL_FROM"),
     replyTo:
-      environment.EMAIL_REPLY_TO === undefined
+      environment.EMAIL_REPLY_TO === undefined || environment.EMAIL_REPLY_TO === ""
         ? null
         : parseMailbox(environment.EMAIL_REPLY_TO, "EMAIL_REPLY_TO"),
     requestTimeoutMs,

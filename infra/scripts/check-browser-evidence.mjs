@@ -279,7 +279,7 @@ if (evidence !== null) {
         }
         const image = await readFile(resolvedPath);
         let textualMetadata = "";
-        for (let offset = 8; offset + 12 <= image.length; ) {
+        for (let offset = 8; offset + 12 <= image.length;) {
           const length = image.readUInt32BE(offset);
           const type = image.subarray(offset + 4, offset + 8).toString("ascii");
           const dataStart = offset + 8;

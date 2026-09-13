@@ -7,6 +7,14 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { encryptBackup, pruneBackups, readBackupSnapshot, verifyBackup } from "./backup.mjs";
 import {
+  configureEmailState,
+  disableEmailState,
+  finalizeEmailKeyRotation,
+  rollbackEmailKey,
+  rotateEmailKey,
+  rotateEmailPepper
+} from "./email-state.mjs";
+import {
   checkStack,
   command,
   compose,
@@ -16,7 +24,8 @@ import {
   fixture,
   mongoImage,
   repositoryRoot,
-  saveEvidence
+  saveEvidence,
+  validateOperationalEmailState
 } from "./operations.mjs";
 import { initializeState, stateRoot } from "./state.mjs";
 
@@ -107,6 +116,19 @@ export async function backup({ artifactRoot = stateRoot } = {}) {
 async function up() {
   compose("up", "-d", "mongodb");
   compose("run", "--rm", "mongo-init");
+  compose("up", "-d", "--wait", "--wait-timeout", "180", "api", "web");
+}
+
+function option(name, required = true) {
+  const index = process.argv.indexOf(`--${name}`);
+  const value = index < 0 ? undefined : process.argv[index + 1];
+  if (required && (value === undefined || value.startsWith("--"))) {
+    throw new Error(`--${name} is required.`);
+  }
+  return value;
+}
+
+function restartApi() {
   compose("up", "-d", "--wait", "--wait-timeout", "180", "api", "web");
 }
 
@@ -461,6 +483,54 @@ async function main() {
   }
   if (!existsSync(join(stateRoot, "ops", "compose.env")))
     throw new Error("Operator state is not initialized.");
+  if (action === "email-configure") {
+    return configureEmailState({
+      root: stateRoot,
+      from: option("from"),
+      replyTo: option("reply-to", false) ?? null,
+      keyFile: option("key-file"),
+      requestTimeoutMs: option("timeout-ms", false) ?? 5000
+    });
+  }
+  if (action === "email-disable") return disableEmailState(stateRoot);
+  if (action === "email-rotate-key") {
+    const result = rotateEmailKey({ root: stateRoot, keyFile: option("key-file") });
+    if (result.changed) restartApi();
+    return result;
+  }
+  if (action === "email-finalize-key-rotation") {
+    return finalizeEmailKeyRotation(stateRoot);
+  }
+  if (action === "email-rollback-key") {
+    const result = rollbackEmailKey(stateRoot);
+    restartApi();
+    return result;
+  }
+  if (action === "email-rotate-pepper") {
+    if (!process.argv.includes("--invalidate-active-codes")) {
+      throw new Error("email-rotate-pepper requires --invalidate-active-codes.");
+    }
+    validateOperationalEmailState();
+    const recovery = await backup();
+    compose("stop", "api");
+    try {
+      const result = rotateEmailPepper({ root: stateRoot, invalidateActiveCodes: true });
+      compose(
+        "run",
+        "--rm",
+        "seed",
+        "node",
+        "apps/api/dist/account/operator-cli.js",
+        "invalidate-email-login-codes"
+      );
+      restartApi();
+      return { ...result, backup: recovery.filename };
+    } catch (error) {
+      restartApi();
+      throw error;
+    }
+  }
+  validateOperationalEmailState();
   if (action === "build") {
     const buildx = join(stateRoot, "ops", "buildx");
     mkdirSync(buildx, { recursive: true, mode: 0o700 });
@@ -521,7 +591,7 @@ async function main() {
     });
   }
   throw new Error(
-    "Choose init, build, up, seed, fixture, check, backup, restore <filename>, persistence, or unlock."
+    "Choose init, build, up, seed, fixture, check, backup, restore <filename>, persistence, unlock, email-configure, email-disable, email-rotate-key, email-finalize-key-rotation, email-rollback-key, or email-rotate-pepper."
   );
 }
 

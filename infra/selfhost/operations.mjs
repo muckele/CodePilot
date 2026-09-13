@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, readdirSync, statfsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { stateRoot } from "./state.mjs";
+import { validateEmailState } from "./email-state.mjs";
 
 export const repositoryRoot = resolve(import.meta.dirname, "../..");
 export const composeArgs = [
@@ -14,6 +15,10 @@ export const composeArgs = [
 ];
 export const mongoImage =
   "mongo:8.0.26@sha256:3ce3de7f40e914034b03b7dec654005ab54f7dc8306937e44ec6760d9e9409a1";
+
+export function validateOperationalEmailState(root = stateRoot) {
+  return validateEmailState(root);
+}
 
 export function checkDiskBudget(availableBytes, intensive) {
   if (availableBytes < (intensive ? 35 : 31) * 1024 ** 3)
@@ -93,6 +98,7 @@ export function scanSecretLeaks(additional = []) {
 }
 
 export async function checkStack() {
+  validateOperationalEmailState();
   diskGate("check");
   const ids = compose("ps", "-q").split("\n").filter(Boolean);
   const raw = docker("inspect", ...ids);

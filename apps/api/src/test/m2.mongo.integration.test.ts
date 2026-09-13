@@ -274,6 +274,61 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
     return { browser, protection, message };
   }
 
+  it("isolates a runtime email-provider outage from login, sessions, learning, operator recovery, health, and readiness", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const provider = new FakeTransactionalEmailProvider({ failWith: "unavailable" });
+    const outageApp = createEmailTestApp(provider, {
+      nowMs: () => 10_000,
+      sleep: async () => undefined
+    });
+    const email = "provider-outage@example.test";
+    const password = "Correct horse battery staple!";
+    try {
+      const existingSession = request.agent(outageApp);
+      const registered = await register(existingSession, email, password);
+      await onboard(existingSession, registered.csrfToken, "Provider Outage");
+
+      const passwordBrowser = request.agent(outageApp);
+      const loginProtection = await csrf(passwordBrowser);
+      const login = await passwordBrowser
+        .post("/api/v1/auth/login")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", loginProtection.csrfToken)
+        .send({ email, password });
+      expect(login.status).toBe(200);
+      expect((await existingSession.get("/api/v1/me")).status).toBe(200);
+      expect((await existingSession.get("/api/v1/me/today")).status).toBe(200);
+
+      const operatorReset = await issuePasswordReset({
+        models: runtime.persistence.models,
+        email,
+        ttlMs: 60 * 60 * 1_000,
+        issuer: "provider-outage-test"
+      });
+      expect(operatorReset.token).toHaveLength(43);
+      expect((await request(outageApp).get("/health")).status).toBe(200);
+      expect((await request(outageApp).get("/ready")).status).toBe(200);
+
+      const emailBrowser = request.agent(outageApp);
+      const protection = await csrf(emailBrowser);
+      for (const pathname of ["password-reset/request", "email-code/request"]) {
+        const response = await emailBrowser
+          .post(`/api/v1/auth/${pathname}`)
+          .set("Origin", webOrigin)
+          .set("X-CSRF-Token", protection.csrfToken)
+          .send({ email });
+        expect(response.status).toBe(202);
+      }
+      expect(provider.messages).toHaveLength(2);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("requests one delivery-gated reset email while keeping missing accounts generic", async () => {
     if (runtime.persistence.status !== "ready") {
       throw new Error("The real Mongo runtime is required.");

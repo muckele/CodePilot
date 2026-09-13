@@ -16,5 +16,6 @@ test("candidate runtime satisfies private ingress, authentication, replica, reso
   assert.equal(report.fixture.committedDocumentWrites, 4);
   assert.equal(report.fixture.tenantIsolation, true);
   assert.equal(report.fixture.accountExport, true);
+  assert.equal(report.fixture.emailLoginCodeIndexes, true);
   assert.equal(report.secretLeaks, 0);
 });

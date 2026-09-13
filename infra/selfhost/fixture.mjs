@@ -51,6 +51,23 @@ try {
         },
         { upsert: true }
       );
+      await models.EmailLoginCode.updateOne(
+        { userId: user._id, purpose: "email_login" },
+        {
+          $setOnInsert: {
+            userId: user._id,
+            purpose: "email_login",
+            codeDigest: Buffer.alloc(32, index + 1),
+            expiresAt: new Date("2036-09-13T00:00:00.000Z"),
+            sentAt: new Date("2026-09-13T00:00:00.000Z"),
+            consumedAt: null,
+            revokedAt: null,
+            failedAttempts: 0,
+            createdAt: new Date("2026-09-13T00:00:00.000Z")
+          }
+        },
+        { upsert: true }
+      );
       await connection.db
         .collection("selfhost_probe")
         .updateOne(
@@ -87,6 +104,17 @@ try {
     assert.ok(indexes.some((index) => index.unique && index.key.email === 1));
     const sessionIndexes = await models.Session.collection.indexes();
     assert.ok(sessionIndexes.some((index) => index.expireAfterSeconds === 0));
+    const emailLoginCodeIndexes = await models.EmailLoginCode.collection.indexes();
+    assert.ok(
+      emailLoginCodeIndexes.some(
+        (index) => index.key.userId === 1 && index.key.purpose === 1 && index.key.createdAt === -1
+      )
+    );
+    assert.ok(
+      emailLoginCodeIndexes.some(
+        (index) => index.key.expiresAt === 1 && index.expireAfterSeconds === 7 * 24 * 60 * 60
+      )
+    );
     const session = await connection.startSession();
     try {
       for (const committed of [false, true]) {
@@ -138,7 +166,7 @@ try {
   const snapshot = await readSnapshot(connection.db);
   const persisted = await readSnapshot(connection.db, globalCollections);
   process.stdout.write(
-    `${JSON.stringify({ transaction: action !== "fingerprint", committedDocumentWrites, tenantIsolation: action !== "fingerprint", accountExport: action !== "fingerprint", indexes: action !== "fingerprint", collections: snapshot.collections, fingerprint: snapshot.fingerprint, persistenceFingerprint: persisted.fingerprint })}\n`
+    `${JSON.stringify({ transaction: action !== "fingerprint", committedDocumentWrites, tenantIsolation: action !== "fingerprint", accountExport: action !== "fingerprint", indexes: action !== "fingerprint", emailLoginCodeIndexes: action !== "fingerprint", collections: snapshot.collections, fingerprint: snapshot.fingerprint, persistenceFingerprint: persisted.fingerprint })}\n`
   );
 } finally {
   await closePersistence(runtime);

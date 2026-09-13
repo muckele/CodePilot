@@ -36,8 +36,15 @@ function safeBaseUrl(value: string): string {
 }
 
 const action = process.argv[2];
-if (action !== "issue-invite" && action !== "revoke-invite" && action !== "issue-reset") {
-  throw new Error("Action must be issue-invite, revoke-invite, or issue-reset.");
+if (
+  action !== "issue-invite" &&
+  action !== "revoke-invite" &&
+  action !== "issue-reset" &&
+  action !== "invalidate-email-login-codes"
+) {
+  throw new Error(
+    "Action must be issue-invite, revoke-invite, issue-reset, or invalidate-email-login-codes."
+  );
 }
 
 const config = loadApiConfig({
@@ -54,7 +61,10 @@ if (persistence.status !== "ready") {
 }
 
 try {
-  if (action === "revoke-invite") {
+  if (action === "invalidate-email-login-codes") {
+    const result = await persistence.models.EmailLoginCode.deleteMany({ consumedAt: null });
+    process.stdout.write(`${JSON.stringify({ action, deleted: result.deletedCount })}\n`);
+  } else if (action === "revoke-invite") {
     const revoked = await revokeUnusedInvitation({
       models: persistence.models,
       invitationId: option("id") ?? ""

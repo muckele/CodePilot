@@ -170,6 +170,16 @@ describe("API M2 configuration", () => {
         loginCodePepper: pepper,
         fakeOutboxDir: null
       });
+      expect(
+        loadApiConfig({
+          ...productionEnvironment,
+          EMAIL_PROVIDER: "resend",
+          EMAIL_FROM: "security@pilot.example.test",
+          EMAIL_REPLY_TO: "",
+          RESEND_API_KEY_FILE: apiKeyPath,
+          EMAIL_LOGIN_CODE_PEPPER_FILE: pepperPath
+        }).email.replyTo
+      ).toBeNull();
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();

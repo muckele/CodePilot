@@ -17,13 +17,20 @@ services:
       WEB_ORIGIN: ${WEB_ORIGIN:?Set WEB_ORIGIN to the exact HTTPS browser origin}
       TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:?Set TRUST_PROXY_HOPS to the exact trusted ingress count (0..2)}
       PERSISTENCE_MODE: required
-      MONGO_URI: ${MONGO_URI:?Inject the managed Mongo replica-set URI from a secret manager}
+      MONGO_URI_FILE: /run/secrets/mongo-uri
       MONGO_DB_NAME: ${MONGO_DB_NAME:-codelift}
       REGISTRATION_MODE: invite_only
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-disabled}
+      EMAIL_FROM: ${EMAIL_FROM:-disabled@localhost}
+      EMAIL_REPLY_TO: ${EMAIL_REPLY_TO:-}
+      EMAIL_REQUEST_TIMEOUT_MS: ${EMAIL_REQUEST_TIMEOUT_MS:-5000}
+      RESEND_API_KEY_FILE: /run/secrets/resend-api-key
+      EMAIL_LOGIN_CODE_PEPPER_FILE: /run/secrets/email-login-code-pepper
       AI_PROVIDER: mock
       AI_EXTERNAL_ENABLED: "false"
       AI_AGENT_ENABLED: "false"
     expose: ["4000"]
+    secrets: [mongo-uri, resend-api-key, email-login-code-pepper]
     healthcheck:
       test:
         - CMD
@@ -65,13 +72,15 @@ services:
       WEB_ORIGIN: ${WEB_ORIGIN:?Set WEB_ORIGIN to the exact HTTPS browser origin}
       TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:?Set TRUST_PROXY_HOPS to the exact trusted ingress count (0..2)}
       PERSISTENCE_MODE: required
-      MONGO_URI: ${MONGO_URI:?Inject the managed Mongo replica-set URI from a secret manager}
+      MONGO_URI_FILE: /run/secrets/mongo-uri
       MONGO_DB_NAME: ${MONGO_DB_NAME:-codelift}
       REGISTRATION_MODE: closed
+      EMAIL_PROVIDER: disabled
       AI_PROVIDER: mock
       AI_EXTERNAL_ENABLED: "false"
       AI_AGENT_ENABLED: "false"
     command: ["node", "apps/api/dist/seed/cli.js", "seed"]
+    secrets: [mongo-uri]
     restart: "no"
     networks: [private]
 
@@ -91,3 +100,11 @@ services:
 networks:
   private:
     internal: false
+
+secrets:
+  mongo-uri:
+    file: ${MONGO_URI_SECRET_FILE:?Set the mode-0600 managed Mongo URI host file}
+  resend-api-key:
+    file: ${RESEND_API_KEY_HOST_FILE:-/dev/null}
+  email-login-code-pepper:
+    file: ${EMAIL_LOGIN_CODE_PEPPER_HOST_FILE:-/dev/null}
