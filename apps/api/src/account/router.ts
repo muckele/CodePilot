@@ -4,6 +4,7 @@ import {
   deleteAccountRequestSchema,
   emailLoginCodeRequestResponseSchema,
   emailLoginCodeRequestSchema,
+  emailLoginCodeVerifyRequestSchema,
   loginRequestSchema,
   meResponseSchema,
   mvpConfigurationResponseSchema,
@@ -335,6 +336,20 @@ export function createAccountRouter(options: {
       });
     }
   });
+  const emailCodeVerifyLimiter = rateLimit({
+    windowMs: 15 * 60 * 1_000,
+    limit: 20,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler(_request, response) {
+      sendProblem(response, {
+        type: "https://codelift.ai/problems/rate-limit-exceeded",
+        title: "Too many attempts",
+        status: 429,
+        detail: "Wait before trying another sign-in code."
+      });
+    }
+  });
   const mutationLimiter = rateLimit({
     windowMs: 60 * 1_000,
     limit: 120,
@@ -526,6 +541,32 @@ export function createAccountRouter(options: {
       response.status(202).json(
         emailLoginCodeRequestResponseSchema.parse({
           message: "If an account exists for that email, we sent a sign-in code."
+        })
+      );
+    })
+  );
+
+  router.post(
+    "/auth/email-code/verify",
+    emailCodeVerifyLimiter,
+    asyncHandler(async (request, response) => {
+      const identity = await verifiedIdentity(request);
+      const input = parseBody(emailLoginCodeVerifyRequestSchema, request.body);
+      if (options.config.email.provider === "disabled") {
+        throw new HttpProblem({
+          type: "https://codelift.ai/problems/email-self-service-unavailable",
+          title: "Email account access unavailable",
+          status: 503,
+          detail: "Email account access is not enabled. Use the operator recovery path."
+        });
+      }
+      const result = await service.verifyEmailLoginCode(identity, input.email, input.code);
+      setSessionCookie(response, options.config, result.sessionToken, result.expiresAt);
+      response.status(200).json(
+        authSessionResponseSchema.parse({
+          authenticated: true,
+          user: result.user,
+          csrfToken: result.csrfToken
         })
       );
     })

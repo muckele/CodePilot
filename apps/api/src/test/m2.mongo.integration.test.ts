@@ -254,6 +254,26 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
     return createApp(options);
   }
 
+  async function requestEmailLoginCode(
+    emailApp: ReturnType<typeof createApp>,
+    provider: FakeTransactionalEmailProvider,
+    email: string
+  ) {
+    const browser = request.agent(emailApp);
+    const protection = await csrf(browser);
+    const response = await browser
+      .post("/api/v1/auth/email-code/request")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", protection.csrfToken)
+      .send({ email });
+    expect(response.status).toBe(202);
+    const message = provider.messages.at(-1);
+    if (message?.purpose !== "email-login-code") {
+      throw new Error("Expected one email-login-code message.");
+    }
+    return { browser, protection, message };
+  }
+
   it("requests one delivery-gated reset email while keeping missing accounts generic", async () => {
     if (runtime.persistence.status !== "ready") {
       throw new Error("The real Mongo runtime is required.");
@@ -609,6 +629,435 @@ describe.sequential("M2 real-Mongo account and progress boundary", () => {
     });
     expect(issueSpy).not.toHaveBeenCalled();
     issueSpy.mockRestore();
+  });
+
+  it("verifies a delivered sign-in code through the standard one-time session boundary", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const provider = new FakeTransactionalEmailProvider();
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const email = "verify-email-code@example.com";
+    const password = "Correct horse battery staple!";
+    const registered = await register(request.agent(emailApp), email, password);
+    const passwordHashBefore = (
+      await models.User.findById(registered.user.id).select("+passwordHash").lean()
+    )?.passwordHash;
+    const { browser, protection, message } = await requestEmailLoginCode(emailApp, provider, email);
+    const issued = await models.EmailLoginCode.findOne({ revokedAt: null }).lean();
+    if (issued === null) throw new Error("Expected one issued email login code.");
+    const sibling = await models.EmailLoginCode.create({
+      userId: issued.userId,
+      purpose: "email_login",
+      codeDigest: "c".repeat(64),
+      expiresAt: new Date(Date.now() + 10 * 60 * 1_000),
+      sentAt: new Date(),
+      consumedAt: null,
+      revokedAt: null,
+      failedAttempts: 0,
+      createdAt: new Date(issued.createdAt.getTime() - 1)
+    });
+    const anonymousSession = await models.Session.findOne({ userId: null }).lean();
+    if (anonymousSession === null) throw new Error("Expected the pre-auth browser session.");
+
+    const verified = await browser
+      .post("/api/v1/auth/email-code/verify")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", protection.csrfToken)
+      .send({ email, code: message.code });
+
+    expect(verified.status).toBe(200);
+    expect(verified.body).toMatchObject({
+      authenticated: true,
+      user: { id: registered.user.id, email },
+      csrfToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/)
+    });
+    expect(verified.headers["set-cookie"]?.[0]).toContain("HttpOnly");
+    expect(await models.Session.findById(anonymousSession._id).lean()).toBeNull();
+    expect(await models.EmailLoginCode.findById(issued._id).lean()).toMatchObject({
+      consumedAt: expect.any(Date),
+      revokedAt: null
+    });
+    expect(await models.EmailLoginCode.findById(sibling._id).lean()).toMatchObject({
+      revokedAt: expect.any(Date)
+    });
+    expect(await models.UserActivity.findOne({ userId: registered.user.id }).lean()).not.toBeNull();
+    expect(
+      (await models.User.findById(registered.user.id).select("+passwordHash").lean())?.passwordHash
+    ).toBe(passwordHashBefore);
+    expect(
+      await models.PilotAggregate.findOne({ event: "email_login_code_succeeded" }).lean()
+    ).toMatchObject({ count: 1 });
+
+    const replayBrowser = request.agent(emailApp);
+    const replayProtection = await csrf(replayBrowser);
+    const replay = await replayBrowser
+      .post("/api/v1/auth/email-code/verify")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", replayProtection.csrfToken)
+      .send({ email, code: message.code });
+    expect(replay.status).toBe(401);
+    expect(replay.body).toMatchObject({
+      type: "https://codelift.ai/problems/invalid-email-login-code",
+      title: "Invalid sign-in code",
+      status: 401,
+      detail: "That code is invalid or expired. Request a new code and try again."
+    });
+
+    const passwordBrowser = request.agent(emailApp);
+    const passwordProtection = await csrf(passwordBrowser);
+    const passwordLogin = await passwordBrowser
+      .post("/api/v1/auth/login")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", passwordProtection.csrfToken)
+      .send({ email, password });
+    expect(passwordLogin.status).toBe(200);
+  });
+
+  it("returns one generic failure for wrong and inactive codes and locks attempt five", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const provider = new FakeTransactionalEmailProvider();
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const email = "invalid-email-code@example.com";
+    await register(request.agent(emailApp), email);
+    const { browser, protection, message } = await requestEmailLoginCode(emailApp, provider, email);
+    const issued = await models.EmailLoginCode.findOne({ revokedAt: null }).lean();
+    if (issued === null) throw new Error("Expected one issued email login code.");
+    const wrongCode = message.code === "000000" ? "000001" : "000000";
+    const normalizedFailures: unknown[] = [];
+    const verify = async (targetEmail: string, code: string) => {
+      const response = await browser
+        .post("/api/v1/auth/email-code/verify")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", protection.csrfToken)
+        .send({ email: targetEmail, code });
+      expect(response.status).toBe(401);
+      const { requestId: _requestId, ...normalized } = response.body as Record<string, unknown>;
+      normalizedFailures.push(normalized);
+      return response;
+    };
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await verify(email, wrongCode);
+      expect(await models.EmailLoginCode.findById(issued._id).lean()).toMatchObject({
+        failedAttempts: attempt,
+        revokedAt: attempt === 5 ? expect.any(Date) : null
+      });
+    }
+    await verify(email, wrongCode);
+    expect(await models.EmailLoginCode.findById(issued._id).lean()).toMatchObject({
+      failedAttempts: 5,
+      revokedAt: expect.any(Date)
+    });
+
+    const inactiveStates = [
+      {
+        sentAt: null,
+        expiresAt: new Date(Date.now() + 60_000),
+        consumedAt: null,
+        revokedAt: null,
+        failedAttempts: 0
+      },
+      {
+        sentAt: new Date(),
+        expiresAt: new Date(Date.now() - 1),
+        consumedAt: null,
+        revokedAt: null,
+        failedAttempts: 0
+      },
+      {
+        sentAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+        consumedAt: new Date(),
+        revokedAt: null,
+        failedAttempts: 0
+      },
+      {
+        sentAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+        consumedAt: null,
+        revokedAt: new Date(),
+        failedAttempts: 0
+      },
+      {
+        sentAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+        consumedAt: null,
+        revokedAt: null,
+        failedAttempts: 5
+      }
+    ];
+    for (const state of inactiveStates) {
+      await models.EmailLoginCode.updateOne({ _id: issued._id }, { $set: state });
+      await verify(email, message.code);
+    }
+    await verify("missing-verify-code@example.com", message.code);
+    expect(normalizedFailures).toHaveLength(12);
+    expect(new Set(normalizedFailures.map((failure) => JSON.stringify(failure))).size).toBe(1);
+    expect(normalizedFailures[0]).toEqual({
+      type: "https://codelift.ai/problems/invalid-email-login-code",
+      title: "Invalid sign-in code",
+      status: 401,
+      detail: "That code is invalid or expired. Request a new code and try again."
+    });
+
+    for (let attempt = 12; attempt < 20; attempt += 1) {
+      await verify("missing-verify-code@example.com", message.code);
+    }
+    const limited = await browser
+      .post("/api/v1/auth/email-code/verify")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", protection.csrfToken)
+      .send({ email, code: message.code });
+    expect(limited.status).toBe(429);
+  });
+
+  it("serializes five concurrent wrong codes into generic failures and one exhausted record", async () => {
+    if (runtime.persistence.status !== "ready" || runtime.account.status !== "ready") {
+      throw new Error("The real Mongo account runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const service = runtime.account.service;
+    const provider = new FakeTransactionalEmailProvider();
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const email = "concurrent-wrong-email-code@example.com";
+    await register(request.agent(emailApp), email);
+    const requested = await requestEmailLoginCode(emailApp, provider, email);
+    const wrongCode = requested.message.code === "000000" ? "000001" : "000000";
+    const identities = await Promise.all(
+      Array.from({ length: 5 }, async () => {
+        const issued = await service.issueCsrf(null);
+        return service.verifyCsrf(issued.sessionToken, issued.csrfToken);
+      })
+    );
+
+    const attempts = await Promise.allSettled(
+      identities.map((identity) => service.verifyEmailLoginCode(identity, email, wrongCode))
+    );
+
+    expect(attempts).toHaveLength(5);
+    for (const attempt of attempts) {
+      expect(attempt.status).toBe("rejected");
+      if (attempt.status === "rejected") {
+        expect(attempt.reason).toMatchObject({
+          status: 401,
+          detail: "That code is invalid or expired. Request a new code and try again."
+        });
+      }
+    }
+    expect(await models.EmailLoginCode.findOne({}).lean()).toMatchObject({
+      failedAttempts: 5,
+      revokedAt: expect.any(Date)
+    });
+  });
+
+  it("validates and disables sign-in-code verification before service work", async () => {
+    if (runtime.account.status !== "ready") {
+      throw new Error("The real Mongo account runtime is required.");
+    }
+    const provider = new FakeTransactionalEmailProvider();
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const browser = request.agent(emailApp);
+    const protection = await csrf(browser);
+    const missingOrigin = await browser
+      .post("/api/v1/auth/email-code/verify")
+      .set("X-CSRF-Token", protection.csrfToken)
+      .send({ email: "verify-bounds@example.com", code: "123456" });
+    expect(missingOrigin.status).toBe(403);
+    const malformed = await browser
+      .post("/api/v1/auth/email-code/verify")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", protection.csrfToken)
+      .send({ email: "verify-bounds@example.com", code: "12345", unexpected: true });
+    expect(malformed.status).toBe(422);
+
+    const verifySpy = vi.spyOn(runtime.account.service, "verifyEmailLoginCode");
+    const disabledBrowser = request.agent(runtime.app);
+    const disabledProtection = await csrf(disabledBrowser);
+    const disabled = await disabledBrowser
+      .post("/api/v1/auth/email-code/verify")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", disabledProtection.csrfToken)
+      .send({ email: "verify-disabled@example.com", code: "123456" });
+    expect(disabled.status).toBe(503);
+    expect(disabled.body).toMatchObject({
+      type: "https://codelift.ai/problems/email-self-service-unavailable",
+      status: 503
+    });
+    expect(verifySpy).not.toHaveBeenCalled();
+    verifySpy.mockRestore();
+  });
+
+  it("allows exactly one winner across concurrent correct sign-in-code submissions", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const provider = new FakeTransactionalEmailProvider();
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const email = "concurrent-verify-email-code@example.com";
+    await register(request.agent(emailApp), email);
+    const first = await requestEmailLoginCode(emailApp, provider, email);
+    const secondBrowser = request.agent(emailApp);
+    const secondProtection = await csrf(secondBrowser);
+
+    const responses = await Promise.all([
+      first.browser
+        .post("/api/v1/auth/email-code/verify")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", first.protection.csrfToken)
+        .send({ email, code: first.message.code }),
+      secondBrowser
+        .post("/api/v1/auth/email-code/verify")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", secondProtection.csrfToken)
+        .send({ email, code: first.message.code })
+    ]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 401]);
+    expect(await models.EmailLoginCode.findOne({}).lean()).toMatchObject({
+      consumedAt: expect.any(Date)
+    });
+    expect(
+      await models.PilotAggregate.findOne({ event: "email_login_code_succeeded" }).lean()
+    ).toMatchObject({ count: 1 });
+    expect(
+      await models.PilotAggregate.findOne({ event: "email_login_code_failed" }).lean()
+    ).toMatchObject({ count: 1 });
+  });
+
+  it("excludes login-code control state from export and deletes every state with the account", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const emailApp = createEmailTestApp(new FakeTransactionalEmailProvider(), {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const browser = request.agent(emailApp);
+    const password = "Correct horse battery staple!";
+    const registered = await register(browser, "delete-email-codes@example.com", password);
+    const now = new Date();
+    await models.EmailLoginCode.insertMany([
+      {
+        userId: registered.user.id,
+        purpose: "email_login",
+        codeDigest: "1".repeat(64),
+        expiresAt: new Date(now.getTime() + 60_000),
+        sentAt: now,
+        consumedAt: null,
+        revokedAt: null,
+        failedAttempts: 0
+      },
+      {
+        userId: registered.user.id,
+        purpose: "email_login",
+        codeDigest: "2".repeat(64),
+        expiresAt: new Date(now.getTime() - 60_000),
+        sentAt: now,
+        consumedAt: null,
+        revokedAt: null,
+        failedAttempts: 0
+      },
+      {
+        userId: registered.user.id,
+        purpose: "email_login",
+        codeDigest: "3".repeat(64),
+        expiresAt: new Date(now.getTime() + 60_000),
+        sentAt: now,
+        consumedAt: now,
+        revokedAt: null,
+        failedAttempts: 0
+      },
+      {
+        userId: registered.user.id,
+        purpose: "email_login",
+        codeDigest: "4".repeat(64),
+        expiresAt: new Date(now.getTime() + 60_000),
+        sentAt: now,
+        consumedAt: null,
+        revokedAt: now,
+        failedAttempts: 5
+      }
+    ]);
+
+    const exported = await browser.get("/api/v1/me/export");
+    expect(exported.status).toBe(200);
+    const serializedExport = JSON.stringify(exported.body);
+    for (const forbidden of [
+      "EmailLoginCode",
+      "codeDigest",
+      "failedAttempts",
+      "deliveryMethod",
+      "loginCodePepper",
+      "sentAt"
+    ]) {
+      expect(serializedExport).not.toContain(forbidden);
+    }
+
+    const deleted = await browser
+      .delete("/api/v1/me")
+      .set("Origin", webOrigin)
+      .set("X-CSRF-Token", registered.csrfToken)
+      .send({ password, confirmation: "DELETE" });
+    expect(deleted.status).toBe(204);
+    expect(await models.EmailLoginCode.countDocuments({ userId: registered.user.id })).toBe(0);
+  });
+
+  it("leaves no authenticated session or login code when deletion races verification", async () => {
+    if (runtime.persistence.status !== "ready") {
+      throw new Error("The real Mongo runtime is required.");
+    }
+    const models = runtime.persistence.models;
+    const provider = new FakeTransactionalEmailProvider();
+    const emailApp = createEmailTestApp(provider, {
+      nowMs: () => 0,
+      sleep: async () => undefined
+    });
+    const email = "delete-verify-race@example.com";
+    const password = "Correct horse battery staple!";
+    const deletionBrowser = request.agent(emailApp);
+    const registered = await register(deletionBrowser, email, password);
+    const verification = await requestEmailLoginCode(emailApp, provider, email);
+
+    const [deleted, verified] = await Promise.all([
+      deletionBrowser
+        .delete("/api/v1/me")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", registered.csrfToken)
+        .send({ password, confirmation: "DELETE" }),
+      verification.browser
+        .post("/api/v1/auth/email-code/verify")
+        .set("Origin", webOrigin)
+        .set("X-CSRF-Token", verification.protection.csrfToken)
+        .send({ email, code: verification.message.code })
+    ]);
+
+    expect(deleted.status).toBe(204);
+    expect([200, 401, 500]).toContain(verified.status);
+    expect(await models.User.findById(registered.user.id).lean()).toBeNull();
+    expect(await models.EmailLoginCode.countDocuments({ userId: registered.user.id })).toBe(0);
+    expect(await models.Session.countDocuments({ userId: registered.user.id })).toBe(0);
   });
 
   it("contains a runtime provider outage to the generic reset-email operation", async () => {

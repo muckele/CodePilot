@@ -33,7 +33,7 @@ import {
   issueSelfServicePasswordReset,
   type SelfServicePasswordResetResult
 } from "./access-operator.js";
-import { digestLoginCode, generateLoginCode } from "./email-login-code.js";
+import { digestLoginCode, generateLoginCode, loginCodeMatches } from "./email-login-code.js";
 import {
   createDummyPasswordHash,
   createOpaqueToken,
@@ -135,6 +135,15 @@ function accessTokenRejected(): HttpProblem {
     "Unable to complete account access",
     400,
     "The account access link is invalid, expired, already used, or does not match this request."
+  );
+}
+
+function invalidEmailLoginCode(): HttpProblem {
+  return accountProblem(
+    "invalid-email-login-code",
+    "Invalid sign-in code",
+    401,
+    "That code is invalid or expired. Request a new code and try again."
   );
 }
 
@@ -319,6 +328,7 @@ export class AccountService {
   readonly #registrationConfig: RegistrationConfig;
   readonly #dummyPasswordHash: string;
   readonly #loginCodePepper: Buffer | null;
+  readonly #dummyLoginCodeDigest: string | null;
   readonly #now: () => Date;
 
   private constructor(options: {
@@ -328,6 +338,7 @@ export class AccountService {
     registrationConfig: RegistrationConfig;
     dummyPasswordHash: string;
     loginCodePepper?: Buffer | null;
+    dummyLoginCodeDigest: string | null;
     now?: () => Date;
   }) {
     this.#models = options.models;
@@ -339,6 +350,7 @@ export class AccountService {
       options.loginCodePepper === undefined || options.loginCodePepper === null
         ? null
         : Buffer.from(options.loginCodePepper);
+    this.#dummyLoginCodeDigest = options.dummyLoginCodeDigest;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -351,9 +363,18 @@ export class AccountService {
     now?: () => Date;
   }): Promise<AccountService> {
     const dummyPasswordHash = await createDummyPasswordHash();
+    const dummyLoginCodeDigest =
+      options.loginCodePepper === undefined || options.loginCodePepper === null
+        ? null
+        : digestLoginCode({
+            pepper: options.loginCodePepper,
+            recordIdHex: "000000000000000000000001",
+            code: "000000"
+          });
     return new AccountService({
       ...options,
-      dummyPasswordHash
+      dummyPasswordHash,
+      dummyLoginCodeDigest
     });
   }
 
@@ -862,6 +883,176 @@ export class AccountService {
       },
       { $set: { revokedAt: this.#now() } }
     );
+  }
+
+  async #recordFailedEmailLoginCodeAttempt(
+    codeId: Types.ObjectId,
+    submittedCode: string
+  ): Promise<void> {
+    const loginCodePepper = this.#loginCodePepper;
+    if (loginCodePepper === null) return;
+    const now = this.#now();
+    const databaseSession = await this.#models.User.db.startSession();
+    try {
+      await databaseSession.withTransaction(async () => {
+        const record = await this.#models.EmailLoginCode.findOne({
+          _id: codeId,
+          purpose: "email_login",
+          sentAt: { $ne: null },
+          expiresAt: { $gt: now },
+          consumedAt: null,
+          revokedAt: null,
+          failedAttempts: { $lt: 5 }
+        })
+          .select("+codeDigest")
+          .session(databaseSession);
+        if (record === null) return;
+        const submittedDigest = digestLoginCode({
+          pepper: loginCodePepper,
+          recordIdHex: record._id.toString(),
+          code: submittedCode
+        });
+        if (loginCodeMatches(record.codeDigest, submittedDigest)) return;
+
+        const failedAttempts = record.failedAttempts + 1;
+        const updated = await this.#models.EmailLoginCode.updateOne(
+          {
+            _id: record._id,
+            sentAt: { $ne: null },
+            expiresAt: { $gt: now },
+            consumedAt: null,
+            revokedAt: null,
+            failedAttempts: record.failedAttempts
+          },
+          {
+            $set: {
+              failedAttempts,
+              ...(failedAttempts === 5 ? { revokedAt: now } : {})
+            }
+          },
+          { session: databaseSession }
+        );
+        if (updated.modifiedCount !== 1) {
+          throw new Error("Email login-code attempt state changed concurrently.");
+        }
+      });
+    } finally {
+      await databaseSession.endSession();
+    }
+  }
+
+  async verifyEmailLoginCode(
+    identity: SessionIdentity,
+    emailInput: string,
+    submittedCode: string
+  ): Promise<AuthResult> {
+    const loginCodePepper = this.#loginCodePepper;
+    const dummyLoginCodeDigest = this.#dummyLoginCodeDigest;
+    if (loginCodePepper === null || dummyLoginCodeDigest === null) {
+      throw new Error("Email login-code verification requires configured HMAC key material.");
+    }
+    const email = emailAddressSchema.parse(emailInput);
+    const now = this.#now();
+    const user = await this.#models.User.findOne({ email }).select("_id");
+    const lookupUserId = user?._id ?? new Types.ObjectId("000000000000000000000001");
+    const record = await this.#models.EmailLoginCode.findOne({
+      userId: lookupUserId,
+      purpose: "email_login",
+      sentAt: { $ne: null },
+      expiresAt: { $gt: now },
+      consumedAt: null,
+      revokedAt: null,
+      failedAttempts: { $lt: 5 }
+    })
+      .sort({ createdAt: -1 })
+      .select("+codeDigest");
+    const digestRecordId = record?._id.toString() ?? "000000000000000000000001";
+    const submittedDigest = digestLoginCode({
+      pepper: loginCodePepper,
+      recordIdHex: digestRecordId,
+      code: submittedCode
+    });
+    const expectedDigest = record?.codeDigest ?? dummyLoginCodeDigest;
+
+    if (
+      identity.userId !== null ||
+      record === null ||
+      !loginCodeMatches(expectedDigest, submittedDigest)
+    ) {
+      if (identity.userId === null && record !== null) {
+        await this.#recordFailedEmailLoginCodeAttempt(record._id, submittedCode);
+      }
+      await this.recordPilotEventBestEffort("email_login_code_failed");
+      throw invalidEmailLoginCode();
+    }
+
+    const databaseSession = await this.#models.User.db.startSession();
+    let result: AuthResult | null = null;
+    try {
+      await databaseSession.withTransaction(async () => {
+        const claimed = await this.#models.EmailLoginCode.findOneAndUpdate(
+          {
+            _id: record._id,
+            userId: record.userId,
+            purpose: "email_login",
+            sentAt: { $ne: null },
+            expiresAt: { $gt: now },
+            consumedAt: null,
+            revokedAt: null,
+            failedAttempts: { $lt: 5 }
+          },
+          { $set: { consumedAt: now } },
+          { session: databaseSession, returnDocument: "after" }
+        )
+          .select("+codeDigest")
+          .session(databaseSession);
+        if (claimed === null) return;
+        const claimedDigest = digestLoginCode({
+          pepper: loginCodePepper,
+          recordIdHex: claimed._id.toString(),
+          code: submittedCode
+        });
+        if (!loginCodeMatches(claimed.codeDigest, claimedDigest)) {
+          throw new Error("Claimed email login-code digest changed unexpectedly.");
+        }
+
+        const claimedUser = await this.#models.User.findOneAndUpdate(
+          { _id: claimed.userId },
+          { $inc: { writeFence: 1 } },
+          { session: databaseSession, returnDocument: "after" }
+        );
+        if (claimedUser === null) {
+          throw new Error("Email login-code account disappeared during verification.");
+        }
+        await this.#models.EmailLoginCode.updateMany(
+          {
+            userId: claimedUser._id,
+            purpose: "email_login",
+            _id: { $ne: claimed._id },
+            consumedAt: null,
+            revokedAt: null
+          },
+          { $set: { revokedAt: now } },
+          { session: databaseSession }
+        );
+        await this.#models.Session.deleteOne(
+          { _id: identity.sessionId },
+          { session: databaseSession }
+        );
+        const issued = await this.#createSession(claimedUser._id, databaseSession);
+        result = { ...issued, user: toUser(claimedUser) };
+      });
+    } finally {
+      await databaseSession.endSession();
+    }
+
+    const verified = result as AuthResult | null;
+    if (verified === null) {
+      await this.recordPilotEventBestEffort("email_login_code_failed");
+      throw invalidEmailLoginCode();
+    }
+    await this.recordPilotEventBestEffort("email_login_code_succeeded");
+    return verified;
   }
 
   async authenticate(rawSessionToken: string | null): Promise<{
@@ -1587,6 +1778,10 @@ export class AccountService {
           { session: databaseSession }
         );
         await this.#models.PasswordReset.deleteMany(
+          { userId: user._id },
+          { session: databaseSession }
+        );
+        await this.#models.EmailLoginCode.deleteMany(
           { userId: user._id },
           { session: databaseSession }
         );
