@@ -10,6 +10,15 @@ export interface IssuedAccessToken {
   readonly expiresAt: Date;
 }
 
+export interface IssuedPasswordReset extends IssuedAccessToken {
+  readonly email: string;
+}
+
+export type SelfServicePasswordResetResult =
+  | ({ readonly kind: "issued" } & IssuedPasswordReset)
+  | { readonly kind: "missing_account" }
+  | { readonly kind: "cooldown" };
+
 export type AccountAccessPurpose = "invite" | "password_reset";
 
 export function buildAccountAccessUrl(
@@ -72,20 +81,23 @@ export async function revokeUnusedInvitation(options: {
   return result.modifiedCount === 1;
 }
 
-export async function issuePasswordReset(options: {
+async function issuePasswordResetRecord(options: {
   models: CodeLiftModels;
   email: string;
   ttlMs: number;
   issuer: string;
+  deliveryMethod: "email" | "operator";
+  cooldownMs: number | null;
   now?: Date;
-}): Promise<IssuedAccessToken> {
+}): Promise<SelfServicePasswordResetResult> {
   const email = emailAddressSchema.parse(options.email);
   const now = options.now ?? new Date();
   const token = createOpaqueToken();
+  const tokenHash = digestOpaqueToken(token);
   const expiresAt = new Date(now.getTime() + options.ttlMs);
   const createdBy = boundedIssuer(options.issuer);
   const databaseSession = await options.models.User.db.startSession();
-  let resetId: string | null = null;
+  let result: SelfServicePasswordResetResult = { kind: "missing_account" };
 
   try {
     await databaseSession.withTransaction(async () => {
@@ -95,7 +107,39 @@ export async function issuePasswordReset(options: {
         { session: databaseSession, returnDocument: "after" }
       );
       if (user === null) {
-        throw new Error("No account matches the normalized email.");
+        result = { kind: "missing_account" };
+        return;
+      }
+
+      if (options.deliveryMethod === "email") {
+        await options.models.PasswordReset.updateMany(
+          {
+            userId: user._id,
+            deliveryMethod: "email",
+            sentAt: null,
+            consumedAt: null,
+            revokedAt: null
+          },
+          { $set: { revokedAt: now } },
+          { session: databaseSession }
+        );
+        const cooldownBoundary = new Date(now.getTime() - (options.cooldownMs ?? 0));
+        const recentDelivered = await options.models.PasswordReset.findOne(
+          {
+            userId: user._id,
+            deliveryMethod: "email",
+            sentAt: { $exists: true, $ne: null },
+            consumedAt: null,
+            revokedAt: null,
+            createdAt: { $gt: cooldownBoundary }
+          },
+          null,
+          { session: databaseSession }
+        );
+        if (recentDelivered !== null) {
+          result = { kind: "cooldown" };
+          return;
+        }
       }
 
       await options.models.PasswordReset.updateMany(
@@ -106,24 +150,65 @@ export async function issuePasswordReset(options: {
       const [reset] = await options.models.PasswordReset.create(
         [
           {
-            tokenHash: digestOpaqueToken(token),
+            tokenHash,
             purpose: "password_reset",
             userId: user._id,
             expiresAt,
             consumedAt: null,
             revokedAt: null,
-            createdBy
+            createdBy,
+            deliveryMethod: options.deliveryMethod,
+            ...(options.deliveryMethod === "email" ? { sentAt: null } : {}),
+            createdAt: now
           }
         ],
         { session: databaseSession }
       );
       if (reset === undefined) throw new Error("Password reset creation returned no record.");
-      resetId = reset._id.toString();
+      result = {
+        kind: "issued",
+        id: reset._id.toString(),
+        token,
+        email,
+        expiresAt
+      };
     });
   } finally {
     await databaseSession.endSession();
   }
 
-  if (resetId === null) throw new Error("Password reset creation did not complete.");
-  return { id: resetId, token, expiresAt };
+  return result;
+}
+
+export async function issuePasswordReset(options: {
+  models: CodeLiftModels;
+  email: string;
+  ttlMs: number;
+  issuer: string;
+  now?: Date;
+}): Promise<IssuedAccessToken> {
+  const result = await issuePasswordResetRecord({
+    ...options,
+    deliveryMethod: "operator",
+    cooldownMs: null
+  });
+  if (result.kind !== "issued") {
+    throw new Error("No account matches the normalized email.");
+  }
+  return { id: result.id, token: result.token, expiresAt: result.expiresAt };
+}
+
+export async function issueSelfServicePasswordReset(options: {
+  models: CodeLiftModels;
+  email: string;
+  ttlMs: number;
+  cooldownMs: number;
+  now?: Date;
+}): Promise<SelfServicePasswordResetResult> {
+  return issuePasswordResetRecord({
+    ...options,
+    issuer: "self-service-email",
+    deliveryMethod: "email",
+    cooldownMs: options.cooldownMs
+  });
 }

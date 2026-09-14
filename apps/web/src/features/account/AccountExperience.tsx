@@ -13,15 +13,16 @@ import {
   AccountApiError,
   deleteAccount,
   fetchAuthenticatedToday,
-  fetchCsrf,
-  fetchMe,
+  fetchMvpConfiguration,
   loginAccount,
-  logoutAccount,
   registerAccount,
+  requestEmailLoginCode,
+  requestPasswordResetEmail,
   resetPassword,
   saveOnboarding,
   saveProgressReflection,
-  updateProgressStatus
+  updateProgressStatus,
+  verifyEmailLoginCode
 } from "./api/accountApi";
 import {
   clearUserScratchStorage,
@@ -29,6 +30,7 @@ import {
   SCRATCH_MAX_LENGTH,
   writeScratch
 } from "./scratchStorage";
+import { type AccountSessionState, useAccountSession } from "./accountSession";
 import { ALLOWED_RETURN_PATHS, allowedReturnTo } from "../../app/navigation";
 import {
   DayTaskManager,
@@ -37,12 +39,7 @@ import {
 } from "../workspace/WorkspaceExperience";
 import { FocusOrbTimer, ParticleBurst } from "../workspace/components/SignatureGraphics";
 
-type SessionState =
-  | { status: "checking" }
-  | { status: "anonymous" }
-  | { status: "authenticated"; user: AccountUser }
-  | { status: "expired" }
-  | { status: "unavailable"; message: string; requestId: string | null };
+type SessionState = AccountSessionState;
 
 type MutationNotice =
   | { kind: "error"; message: string; requestId: string | null }
@@ -62,6 +59,24 @@ function asNotice(error: unknown): MutationNotice {
     message: "CodeLift could not safely complete that action. Nothing new was recorded.",
     requestId: null
   };
+}
+
+function emailFromNavigationState(state: unknown): string {
+  if (typeof state !== "object" || state === null || !("email" in state)) {
+    return "";
+  }
+  return typeof state.email === "string" ? state.email : "";
+}
+
+function messageFromNavigationState(state: unknown): string | null {
+  if (typeof state !== "object" || state === null || !("message" in state)) {
+    return null;
+  }
+  return typeof state.message === "string" ? state.message : null;
+}
+
+function normalizeEmailForNavigation(email: string): string {
+  return email.trim().toLowerCase();
 }
 
 function Notice({ notice }: { notice: MutationNotice }) {
@@ -202,7 +217,9 @@ function AuthPage({
   const location = useLocation();
   const navigate = useNavigate();
   const isRegister = mode === "register";
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(() =>
+    isRegister ? "" : emailFromNavigationState(location.state)
+  );
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [invitationToken] = useState(
@@ -210,6 +227,21 @@ function AuthPage({
   );
   const [notice, setNotice] = useState<MutationNotice>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [requestingCode, setRequestingCode] = useState(false);
+  const [emailSelfServiceEnabled, setEmailSelfServiceEnabled] = useState(false);
+
+  useEffect(() => {
+    if (isRegister) return;
+    const controller = new AbortController();
+    fetchMvpConfiguration(controller.signal)
+      .then((configuration) => {
+        setEmailSelfServiceEnabled(configuration.emailSelfServiceEnabled);
+      })
+      .catch(() => {
+        setEmailSelfServiceEnabled(false);
+      });
+    return () => controller.abort();
+  }, [isRegister]);
 
   useEffect(() => {
     if (isRegister && invitationToken !== "") {
@@ -275,6 +307,36 @@ function AuthPage({
       );
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function requestCode() {
+    setNotice(null);
+    if (csrfToken === null) {
+      setNotice({
+        kind: "error",
+        message: "Protection is still loading. Wait a moment, then submit again.",
+        requestId: null
+      });
+      return;
+    }
+
+    setRequestingCode(true);
+    try {
+      const result = await requestEmailLoginCode({ email }, csrfToken);
+      void navigate(
+        { pathname: "/login/email-code", search: location.search },
+        {
+          state: {
+            email: normalizeEmailForNavigation(email),
+            message: result.message
+          }
+        }
+      );
+    } catch (error: unknown) {
+      setNotice(asNotice(error));
+    } finally {
+      setRequestingCode(false);
     }
   }
 
@@ -385,6 +447,25 @@ function AuthPage({
           </button>
         </form>
 
+        {!isRegister && emailSelfServiceEnabled ? (
+          <div className="email-access-options">
+            <p className="account-switch">
+              <Link to="/forgot-password">Forgot password?</Link>
+            </p>
+            <p className="account-separator" aria-hidden="true">
+              <span>or</span>
+            </p>
+            <button
+              className="button button--secondary button--full"
+              type="button"
+              disabled={csrfToken === null || submitting || requestingCode}
+              onClick={() => void requestCode()}
+            >
+              {requestingCode ? "Requesting sign-in code…" : "Email me a sign-in code"}
+            </button>
+          </div>
+        ) : null}
+
         <p className="account-switch">
           <Link to={isRegister ? "/login" : "/register"}>
             {isRegister ? "Already have an account? Sign in" : "Create an account"}
@@ -394,11 +475,253 @@ function AuthPage({
           <Link to="/privacy">Privacy</Link> · <Link to="/terms">Terms</Link> ·{" "}
           <Link to="/support">Support</Link>
         </p>
-        {!isRegister ? (
+        {!isRegister && !emailSelfServiceEnabled ? (
           <p className="account-switch">
             Recovery links are issued by the pilot operator. <Link to="/support">Get support</Link>
           </p>
         ) : null}
+      </div>
+      <WorkshopPromise />
+    </section>
+  );
+}
+
+function EmailCodePage({
+  csrfToken,
+  onAuthenticated
+}: {
+  csrfToken: string | null;
+  onAuthenticated: (user: AccountUser, csrfToken: string, destination: string) => void;
+}) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const initialMessage = messageFromNavigationState(location.state);
+  const [email, setEmail] = useState(() => emailFromNavigationState(location.state));
+  const [code, setCode] = useState("");
+  const [requested, setRequested] = useState(() => initialMessage !== null);
+  const [resendSeconds, setResendSeconds] = useState(() => (initialMessage === null ? 0 : 60));
+  const [notice, setNotice] = useState<MutationNotice>(() =>
+    initialMessage === null ? null : { kind: "success", message: initialMessage }
+  );
+  const [requesting, setRequesting] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+
+  useEffect(() => {
+    if (!requested || resendSeconds <= 0) return;
+    const timer = window.setTimeout(() => {
+      setResendSeconds((current) => Math.max(0, current - 1));
+    }, 1_000);
+    return () => window.clearTimeout(timer);
+  }, [requested, resendSeconds]);
+
+  async function issueCode(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    setNotice(null);
+    if (csrfToken === null) {
+      setNotice({
+        kind: "error",
+        message: "Protection is still loading. Wait a moment, then submit again.",
+        requestId: null
+      });
+      return;
+    }
+
+    setRequesting(true);
+    try {
+      const result = await requestEmailLoginCode({ email }, csrfToken);
+      setEmail(normalizeEmailForNavigation(email));
+      setCode("");
+      setRequested(true);
+      setResendSeconds(60);
+      setNotice({ kind: "success", message: result.message });
+    } catch (error: unknown) {
+      setNotice(asNotice(error));
+    } finally {
+      setRequesting(false);
+    }
+  }
+
+  async function verifyCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setNotice(null);
+    if (csrfToken === null) {
+      setNotice({
+        kind: "error",
+        message: "Protection is still loading. Wait a moment, then submit again.",
+        requestId: null
+      });
+      return;
+    }
+
+    setVerifying(true);
+    try {
+      const result = await verifyEmailLoginCode({ email, code }, csrfToken);
+      const destination = result.user.onboardingComplete
+        ? allowedReturnTo(location.search)
+        : "/app/onboarding";
+      onAuthenticated(result.user, result.csrfToken, destination);
+    } catch (error: unknown) {
+      setCode("");
+      setNotice(asNotice(error));
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  function usePasswordInstead() {
+    void navigate(
+      { pathname: "/login", search: location.search },
+      { state: { email: normalizeEmailForNavigation(email) } }
+    );
+  }
+
+  return (
+    <section className="account-layout">
+      <div className="account-panel">
+        <PageIntro eyebrow="One-time account access" title="Sign in with an emailed code">
+          Request one six-digit code for your account. CodeLift verifies it only after you submit
+          this form.
+        </PageIntro>
+        <Notice notice={notice} />
+
+        {!requested ? (
+          <form className="account-form" onSubmit={(event) => void issueCode(event)} noValidate>
+            <Field id="email-code-email" label="Email address">
+              <input
+                id="email-code-email"
+                name="email"
+                type="email"
+                autoComplete="email"
+                required
+                maxLength={254}
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+            </Field>
+            <button
+              className="button button--primary button--full"
+              type="submit"
+              disabled={csrfToken === null || requesting}
+            >
+              {requesting ? "Requesting sign-in code…" : "Email me a sign-in code"}
+            </button>
+          </form>
+        ) : (
+          <>
+            <p className="email-code-destination">
+              Check your email, then enter the six-digit code.
+            </p>
+            <form className="account-form" onSubmit={verifyCode} noValidate>
+              <Field id="email-login-code" label="Sign-in code">
+                <input
+                  id="email-login-code"
+                  name="code"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="[0-9]{6}"
+                  maxLength={6}
+                  required
+                  value={code}
+                  onChange={(event) =>
+                    setCode(event.target.value.replace(/[^0-9]/g, "").slice(0, 6))
+                  }
+                />
+              </Field>
+              <button
+                className="button button--primary button--full"
+                type="submit"
+                disabled={csrfToken === null || verifying || code.length !== 6}
+              >
+                {verifying ? "Verifying code…" : "Sign in with code"}
+              </button>
+            </form>
+            <button
+              className="button button--secondary button--full"
+              type="button"
+              disabled={csrfToken === null || requesting || resendSeconds > 0}
+              onClick={() => void issueCode()}
+            >
+              {resendSeconds > 0
+                ? `Resend code in ${resendSeconds} seconds`
+                : requesting
+                  ? "Requesting new code…"
+                  : "Resend code"}
+            </button>
+          </>
+        )}
+
+        <p className="account-switch">
+          <button className="button-link" type="button" onClick={usePasswordInstead}>
+            Use password instead
+          </button>
+        </p>
+      </div>
+      <WorkshopPromise />
+    </section>
+  );
+}
+
+function ForgotPasswordPage({ csrfToken }: { csrfToken: string | null }) {
+  const [email, setEmail] = useState("");
+  const [notice, setNotice] = useState<MutationNotice>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setNotice(null);
+    if (csrfToken === null) {
+      setNotice({
+        kind: "error",
+        message: "Protection is still loading. Wait a moment, then submit again.",
+        requestId: null
+      });
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const result = await requestPasswordResetEmail({ email }, csrfToken);
+      setEmail("");
+      setNotice({ kind: "success", message: result.message });
+    } catch (error: unknown) {
+      setNotice(asNotice(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <section className="account-layout">
+      <div className="account-panel">
+        <PageIntro eyebrow="Account recovery" title="Reset your password">
+          Enter the email for your CodeLift account. The response stays the same whether an account
+          matches or not.
+        </PageIntro>
+        <Notice notice={notice} />
+        <form className="account-form" onSubmit={submit} noValidate>
+          <Field id="forgot-password-email" label="Email address">
+            <input
+              id="forgot-password-email"
+              name="email"
+              type="email"
+              autoComplete="email"
+              required
+              maxLength={254}
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          </Field>
+          <button
+            className="button button--primary button--full"
+            type="submit"
+            disabled={csrfToken === null || submitting}
+          >
+            {submitting ? "Requesting link…" : "Email password-reset link"}
+          </button>
+        </form>
+        <p className="account-switch">
+          <Link to="/login">Back to password sign in</Link>
+        </p>
       </div>
       <WorkshopPromise />
     </section>
@@ -1396,16 +1719,13 @@ function AccountPage({
   user,
   csrfToken,
   onSaved,
-  onExpired,
-  onSignedOut
+  onExpired
 }: {
   user: AccountUser;
   csrfToken: string | null;
   onSaved: (user: AccountUser) => void;
   onExpired: () => void;
-  onSignedOut: () => void;
 }) {
-  const navigate = useNavigate();
   const [notice, setNotice] = useState<MutationNotice>(null);
   const [working, setWorking] = useState(false);
   const [profile, setProfile] = useState<OnboardingProfile>(() =>
@@ -1458,31 +1778,6 @@ function AccountPage({
         kind: "success",
         message: "Settings saved. Your next return will use these choices."
       });
-    } catch (error: unknown) {
-      if (error instanceof AccountApiError && error.isAuthenticationFailure) {
-        onExpired();
-        return;
-      }
-      setNotice(asNotice(error));
-    } finally {
-      setWorking(false);
-    }
-  }
-
-  async function signOut() {
-    if (csrfToken === null) {
-      setNotice({
-        kind: "error",
-        message: "Protection is still loading. The server session remains active.",
-        requestId: null
-      });
-      return;
-    }
-    setWorking(true);
-    try {
-      await logoutAccount(csrfToken);
-      onSignedOut();
-      navigate("/login", { replace: true });
     } catch (error: unknown) {
       if (error instanceof AccountApiError && error.isAuthenticationFailure) {
         onExpired();
@@ -1720,16 +2015,6 @@ function AccountPage({
         </button>
       </form>
 
-      <div className="button-row">
-        <button
-          className="button button--secondary"
-          type="button"
-          disabled={working}
-          onClick={signOut}
-        >
-          Sign out
-        </button>
-      </div>
       <div className="danger-zone">
         <h2>Export account data</h2>
         <p>
@@ -1849,89 +2134,17 @@ type AccountOutletContextValue = {
 export function AccountExperience() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [session, setSession] = useState<SessionState>({ status: "checking" });
-  const [csrfToken, setCsrfToken] = useState<string | null>(null);
-  const [bootstrapKey, setBootstrapKey] = useState(0);
+  const {
+    state: session,
+    csrfToken,
+    authenticate: authenticateAccount,
+    updateUser: updateAccountUser,
+    clearSession: clearAccountSession,
+    expireSession: expireAccountSession,
+    refresh: refreshSession
+  } = useAccountSession();
   const [postAuthenticationPath, setPostAuthenticationPath] = useState<string | null>(null);
   const [postSessionDestination, setPostSessionDestination] = useState<string | null>(null);
-  const themePreference =
-    session.status === "authenticated"
-      ? (session.user.profile?.themePreference ?? "system")
-      : "system";
-  const motionPreference =
-    session.status === "authenticated"
-      ? (session.user.profile?.motionPreference ?? "system")
-      : "system";
-
-  useEffect(() => {
-    const root = document.documentElement;
-
-    if (themePreference === "system") {
-      delete root.dataset.theme;
-    } else {
-      root.dataset.theme = themePreference;
-    }
-
-    if (motionPreference === "system" || motionPreference === "gentle") {
-      delete root.dataset.motion;
-    } else {
-      root.dataset.motion = motionPreference;
-    }
-
-    return () => {
-      delete root.dataset.theme;
-      delete root.dataset.motion;
-    };
-  }, [motionPreference, themePreference]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setSession({ status: "checking" });
-    fetchMe(controller.signal)
-      .then((result) => {
-        setSession(
-          result.authenticated
-            ? { status: "authenticated", user: result.user }
-            : { status: "anonymous" }
-        );
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          return;
-        }
-        if (error instanceof AccountApiError && error.isAuthenticationFailure) {
-          setSession({ status: "expired" });
-          return;
-        }
-        setSession({
-          status: "unavailable",
-          message:
-            error instanceof AccountApiError
-              ? error.message
-              : "CodeLift could not verify the private workspace.",
-          requestId: error instanceof AccountApiError ? error.requestId : null
-        });
-      });
-    return () => controller.abort();
-  }, [bootstrapKey]);
-
-  useEffect(() => {
-    if (
-      session.status === "checking" ||
-      session.status === "unavailable" ||
-      session.status === "expired" ||
-      csrfToken !== null
-    ) {
-      return;
-    }
-    const controller = new AbortController();
-    fetchCsrf(controller.signal)
-      .then((result) => setCsrfToken(result.csrfToken))
-      .catch(() => {
-        // The individual form retains its entries and explains that protection is pending.
-      });
-    return () => controller.abort();
-  }, [csrfToken, session.status]);
 
   const pathname = location.pathname;
   const isDevelopmentAdminPath = import.meta.env.DEV && pathname === "/admin";
@@ -1947,33 +2160,42 @@ export function AccountExperience() {
       resolvedPath = "/app/onboarding";
     } else if (
       session.user.onboardingComplete &&
-      (pathname === "/login" || pathname === "/register")
+      (pathname === "/login" ||
+        pathname === "/register" ||
+        pathname === "/forgot-password" ||
+        pathname === "/login/email-code")
     ) {
       resolvedPath = postAuthenticationPath ?? "/app/today";
     }
   }
 
   const expireSession = useCallback(() => {
-    setCsrfToken(null);
-    setSession({ status: "expired" });
-  }, []);
+    expireAccountSession();
+  }, [expireAccountSession]);
 
-  const authenticate = useCallback((user: AccountUser, token: string, destination: string) => {
-    setPostAuthenticationPath(destination);
-    setSession({ status: "authenticated", user });
-    setCsrfToken(token);
-  }, []);
+  const authenticate = useCallback(
+    (user: AccountUser, token: string, destination: string) => {
+      setPostAuthenticationPath(destination);
+      authenticateAccount(user, token);
+    },
+    [authenticateAccount]
+  );
 
-  const updateUser = useCallback((user: AccountUser) => {
-    setSession({ status: "authenticated", user });
-  }, []);
+  const updateUser = useCallback(
+    (user: AccountUser) => {
+      updateAccountUser(user);
+    },
+    [updateAccountUser]
+  );
 
-  const clearSession = useCallback((destination?: string) => {
-    setPostAuthenticationPath(null);
-    setPostSessionDestination(destination ?? null);
-    setCsrfToken(null);
-    setSession({ status: "anonymous" });
-  }, []);
+  const clearSession = useCallback(
+    (destination?: string) => {
+      setPostAuthenticationPath(null);
+      setPostSessionDestination(destination ?? null);
+      clearAccountSession();
+    },
+    [clearAccountSession]
+  );
 
   useEffect(() => {
     if (postAuthenticationPath === pathname) {
@@ -1994,9 +2216,7 @@ export function AccountExperience() {
     return <CheckingWorkspace />;
   }
   if (session.status === "unavailable") {
-    return (
-      <UnavailableWorkspace state={session} retry={() => setBootstrapKey((value) => value + 1)} />
-    );
+    return <UnavailableWorkspace state={session} retry={refreshSession} />;
   }
   if (session.status === "expired") {
     return (
@@ -2075,6 +2295,22 @@ export function AccountPasswordResetRoute() {
   );
 }
 
+export function AccountForgotPasswordRoute() {
+  const context = useAccountOutlet();
+  if (context.session.status !== "anonymous") {
+    return <CheckingWorkspace />;
+  }
+  return <ForgotPasswordPage csrfToken={context.csrfToken} />;
+}
+
+export function AccountEmailCodeRoute() {
+  const context = useAccountOutlet();
+  if (context.session.status !== "anonymous") {
+    return <CheckingWorkspace />;
+  }
+  return <EmailCodePage csrfToken={context.csrfToken} onAuthenticated={context.authenticate} />;
+}
+
 export function AccountOnboardingRoute() {
   const context = useAccountOutlet();
   if (context.session.status !== "authenticated") {
@@ -2111,7 +2347,6 @@ export function AccountSettingsRoute() {
       csrfToken={context.csrfToken}
       onSaved={context.updateUser}
       onExpired={context.expireSession}
-      onSignedOut={context.clearSession}
     />
   );
 }

@@ -42,7 +42,7 @@ The exact operator root is:
 
 ```text
 /Users/Matt/Library/Application Support/CodeLift AI Self-Host
-  secrets/   individual Mongo secrets and backup decryption private key
+  secrets/   individual Mongo secrets, backup key, and optional email files
   backups/   encrypted archives, SHA-256 sidecars, content-free metadata
   ops/       public backup recipient, explicit Compose settings, Buildx state
   evidence/  redacted checks and disk/backup/restore measurements
@@ -53,6 +53,87 @@ into the repository or a cloud-synced user directory. Application helpers mount
 only the particular files they need. The API, seed, and dump helper run with
 the operator UID/GID so Docker Desktop can read those exact private mounts.
 Their filesystems are read-only and they have no Linux capabilities.
+
+## Transactional email state
+
+Initialization writes only nonsecret disabled settings:
+
+```text
+EMAIL_PROVIDER=disabled
+EMAIL_FROM=disabled@localhost
+EMAIL_REQUEST_TIMEOUT_MS=5000
+RESEND_API_KEY_HOST_FILE=/dev/null
+EMAIL_LOGIN_CODE_PEPPER_HOST_FILE=/dev/null
+```
+
+It creates no Resend key or login-code pepper. In disabled mode, self-service
+email endpoints report that operator recovery is required; password login,
+existing sessions, learner routes, operator resets, `/health`, and `/ready`
+remain available. Do not add a live Resend probe to either readiness endpoint.
+
+Enabling email is a separate, explicitly authorized operator action. First
+create or obtain the Resend key through the provider’s protected interface and
+store it in a mode-0600, operator-owned, non-symlink regular file outside both
+this repository and the self-host state root. Never paste the value into chat,
+put it in a command argument, save it in shell history, or copy it into
+`compose.env`. Then configure only by passing the source file path:
+
+```bash
+node infra/selfhost/cli.mjs email-configure \
+  --from sender@verified.example \
+  --key-file '/absolute/protected/path/resend-api-key' \
+  --timeout-ms 5000
+node infra/selfhost/cli.mjs up
+node infra/selfhost/cli.mjs check
+```
+
+Add `--reply-to reply@verified.example` only when that mailbox is approved.
+`email-configure` validates and atomically copies the key into protected
+operator state and creates a separate random 32-byte login-code pepper. It
+never accepts a pepper from the provider key or command line. Compose mounts
+the exact two resulting files into the API only. Seed, web, Mongo, backup, and
+restore services receive neither email secret.
+
+Before enabling delivery for learners, verify provider account ownership,
+sender/domain and DNS state, restart/readiness, sanitized alert routing, and one
+separately authorized synthetic live delivery. No such provider mutation or
+live send is part of repository source verification.
+
+To disable delivery, remove the runtime capability through the state helper and
+recreate API/web with the disabled configuration:
+
+```bash
+node infra/selfhost/cli.mjs email-disable
+node infra/selfhost/cli.mjs up
+node infra/selfhost/cli.mjs check
+```
+
+Do not delete or edit protected files by hand. Key rotation keeps one rollback
+copy until an authorized synthetic delivery proves the replacement:
+
+```bash
+node infra/selfhost/cli.mjs email-rotate-key \
+  --key-file '/absolute/protected/path/replacement-resend-api-key'
+node infra/selfhost/cli.mjs email-finalize-key-rotation
+```
+
+If validation fails before finalization, restore the prior key with:
+
+```bash
+node infra/selfhost/cli.mjs email-rollback-key
+```
+
+Pepper loss or suspected exposure invalidates every active sign-in code. The
+only supported rotation first creates a fresh encrypted backup, stops the API,
+atomically replaces the pepper, runs the internal database invalidation, and
+restarts API/web:
+
+```bash
+node infra/selfhost/cli.mjs email-rotate-pepper --invalidate-active-codes
+```
+
+Never reuse the provider key as the pepper. Password resets use independent
+random bearer tokens and remain covered by their own revocation rules.
 
 ## Initialize, build, and start
 
@@ -108,7 +189,8 @@ or untrusted signals fall back to Nginx's actual scheme/listening port. An
 incoming `X-Forwarded-Port` is not independently trusted. Exact Host (including
 port) and Origin are preserved; forwarded Host is derived from Host.
 
-Authentication/access endpoints (`login`, `register`, `reset-password`, `csrf`)
+Edge-limited authentication/access endpoints (`login`, `register`,
+`reset-password`, `csrf`)
 share a 6-request/minute Nginx zone with a burst of 20 and status 429. Existing
 API limiters continue to apply. Static assets, page navigation, and curriculum
 API routes have an empty limiter key and do not consume this zone. The zone
@@ -197,10 +279,7 @@ and unlocking. Never run overlapping backups or maintenance writes.
 
 ```bash
 node infra/selfhost/cli.mjs persistence
-node --test infra/selfhost/state.test.mjs infra/selfhost/backup.test.mjs infra/selfhost/operations.test.mjs infra/selfhost/compose.test.mjs
-node --test --test-concurrency=1 infra/selfhost/nginx.test.mjs infra/selfhost/mongo.test.mjs infra/selfhost/loopback.test.mjs infra/selfhost/stack.test.mjs
-node --test --test-concurrency=1 infra/selfhost/mongo-bootstrap.test.mjs infra/selfhost/restore.test.mjs
-node --test infra/selfhost/restore-safety.test.mjs
+node --test --test-concurrency=1 infra/selfhost/*.test.mjs
 ```
 
 The runtime tests require initialized operator state and the built/running
@@ -215,7 +294,13 @@ backups. Cleanup derives names from that invocation's unique ID and checks
 matching Docker ownership labels, never shared retained-drill evidence.
 The safety regression uses a synthetic operator root with eight pre-existing
 encrypted artifacts and stale diagnostic resources. The TTL regression waits
-through a full interval and therefore takes over a minute.
+through a full interval and therefore takes over a minute. The entire self-host
+suite is intentionally serial: the integration tests share an exclusive
+operator lock and named local stack, so parallel invocations are invalid rather
+than evidence of product failure. Email coverage validates disabled defaults,
+strict files, rotation/rollback, pepper invalidation, production Compose secret
+mounts, restored reset/code indexes, and runtime provider-outage isolation. It
+uses synthetic providers only and never sends live email.
 
 After a source commit, run the authoritative release-quality aggregate once
 for that exact clean revision and obtain exact-SHA CI. Prior source evidence

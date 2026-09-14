@@ -3,6 +3,9 @@ import {
   authSessionResponseSchema,
   csrfResponseSchema,
   deleteAccountRequestSchema,
+  emailLoginCodeRequestResponseSchema,
+  emailLoginCodeRequestSchema,
+  emailLoginCodeVerifyRequestSchema,
   loginRequestSchema,
   meResponseSchema,
   mvpConfigurationResponseSchema,
@@ -10,6 +13,8 @@ import {
   onboardingResponseSchema,
   problemDetailsSchema,
   passwordResetRequestSchema,
+  passwordResetEmailRequestSchema,
+  passwordResetEmailResponseSchema,
   progressDayResponseSchema,
   progressEvidenceRequestSchema,
   progressReflectionRequestSchema,
@@ -37,6 +42,10 @@ export type OnboardingResponse = ReturnType<typeof onboardingResponseSchema.pars
 export type AuthenticatedTodayResponse = ReturnType<typeof authenticatedTodayResponseSchema.parse>;
 export type ProgressDayResponse = ReturnType<typeof progressDayResponseSchema.parse>;
 export type MvpConfigurationResponse = ReturnType<typeof mvpConfigurationResponseSchema.parse>;
+export type PasswordResetEmailResponse = ReturnType<typeof passwordResetEmailResponseSchema.parse>;
+export type EmailLoginCodeRequestResponse = ReturnType<
+  typeof emailLoginCodeRequestResponseSchema.parse
+>;
 
 export type AccountApiErrorKind = "network" | "problem" | "malformed" | "request-validation";
 
@@ -292,6 +301,42 @@ export function resetPassword(input: unknown, csrfToken: string): Promise<void> 
     method: "POST",
     body: parseRequest(passwordResetRequestSchema, input),
     csrfToken
+  });
+}
+
+export function requestPasswordResetEmail(
+  input: unknown,
+  csrfToken: string
+): Promise<PasswordResetEmailResponse> {
+  return requestJson("/api/v1/auth/password-reset/request", {
+    method: "POST",
+    body: parseRequest(passwordResetEmailRequestSchema, input),
+    csrfToken,
+    responseContract: passwordResetEmailResponseSchema
+  });
+}
+
+export function requestEmailLoginCode(
+  input: unknown,
+  csrfToken: string
+): Promise<EmailLoginCodeRequestResponse> {
+  return requestJson("/api/v1/auth/email-code/request", {
+    method: "POST",
+    body: parseRequest(emailLoginCodeRequestSchema, input),
+    csrfToken,
+    responseContract: emailLoginCodeRequestResponseSchema
+  });
+}
+
+export function verifyEmailLoginCode(
+  input: unknown,
+  csrfToken: string
+): Promise<AuthSessionResponse> {
+  return requestJson("/api/v1/auth/email-code/verify", {
+    method: "POST",
+    body: parseRequest(emailLoginCodeVerifyRequestSchema, input),
+    csrfToken,
+    responseContract: authSessionResponseSchema
   });
 }
 

@@ -1,5 +1,8 @@
-import type { PropsWithChildren } from "react";
-import { Link, NavLink } from "react-router";
+import { type PropsWithChildren, useEffect, useRef, useState } from "react";
+import { Link, NavLink, useNavigate } from "react-router";
+
+import { useOptionalAccountSession } from "../features/account/accountSession";
+import { AccountApiError } from "../features/account/api/accountApi";
 
 type AppShellProps = PropsWithChildren<{
   modeLabel?: string;
@@ -13,6 +16,39 @@ export function AppShell({
   privateMode = false,
   developmentMode = import.meta.env.DEV
 }: AppShellProps) {
+  const navigate = useNavigate();
+  const accountSession = useOptionalAccountSession();
+  const [signOutPending, setSignOutPending] = useState(false);
+  const [signOutFailure, setSignOutFailure] = useState<{
+    message: string;
+    requestId: string | null;
+  } | null>(null);
+  const signOutAlert = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (signOutFailure !== null) signOutAlert.current?.focus();
+  }, [signOutFailure]);
+
+  async function signOut() {
+    if (signOutPending || accountSession === null) return;
+    setSignOutPending(true);
+    setSignOutFailure(null);
+    try {
+      await accountSession.signOut();
+      navigate("/login", { replace: true });
+    } catch (error: unknown) {
+      setSignOutFailure({
+        message:
+          error instanceof AccountApiError
+            ? error.message
+            : "CodeLift could not safely end the server session. Try signing out again.",
+        requestId: error instanceof AccountApiError ? error.requestId : null
+      });
+    } finally {
+      setSignOutPending(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
@@ -79,6 +115,31 @@ export function AppShell({
                     {label}
                   </NavLink>
                 ))}
+                {accountSession?.status === "authenticated" ? (
+                  <>
+                    <button
+                      className="nav-menu__sign-out"
+                      type="button"
+                      disabled={signOutPending || accountSession.csrfToken === null}
+                      onClick={signOut}
+                    >
+                      {signOutPending ? "Signing out…" : "Sign out"}
+                    </button>
+                    {signOutFailure === null ? null : (
+                      <div
+                        ref={signOutAlert}
+                        className="nav-menu__alert"
+                        role="alert"
+                        tabIndex={-1}
+                      >
+                        <span>{signOutFailure.message}</span>
+                        {signOutFailure.requestId === null ? null : (
+                          <small>Support reference: {signOutFailure.requestId}</small>
+                        )}
+                      </div>
+                    )}
+                  </>
+                ) : null}
               </div>
             </details>
           </nav>

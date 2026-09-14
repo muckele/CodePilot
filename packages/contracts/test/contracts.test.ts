@@ -9,7 +9,14 @@ import {
   curriculumSeedDaySchema,
   createJobApplicationRequestSchema,
   dayTaskPlanSchema,
+  emailLoginCodeRequestResponseSchema,
+  emailLoginCodeRequestSchema,
+  emailLoginCodeSchema,
+  emailLoginCodeVerifyRequestSchema,
+  mvpConfigurationResponseSchema,
   onboardingRequestSchema,
+  passwordResetEmailRequestSchema,
+  passwordResetEmailResponseSchema,
   problemDetailsSchema,
   progressEvidenceRequestSchema,
   progressReflectionRequestSchema,
@@ -254,6 +261,76 @@ describe("account and progress contracts", () => {
         passwordConfirmation: "must stay in the browser"
       })
     ).toThrow();
+  });
+
+  it("keeps self-service email access inputs strict and preserves leading-zero codes", () => {
+    expect(passwordResetEmailRequestSchema.parse({ email: "  MATHEW@example.com " })).toEqual({
+      email: "mathew@example.com"
+    });
+    expect(emailLoginCodeRequestSchema.parse({ email: "  MATHEW@example.com " })).toEqual({
+      email: "mathew@example.com"
+    });
+    expect(
+      emailLoginCodeVerifyRequestSchema.parse({
+        email: "  MATHEW@example.com ",
+        code: "001204"
+      })
+    ).toEqual({ email: "mathew@example.com", code: "001204" });
+    expect(emailLoginCodeSchema.parse("000000")).toBe("000000");
+
+    for (const code of ["12345", "1234567", "12345a", "１２３４５６", 123456]) {
+      expect(() => emailLoginCodeSchema.parse(code)).toThrow();
+    }
+    expect(() =>
+      passwordResetEmailRequestSchema.parse({
+        email: "mathew@example.com",
+        accountId: "64f000000000000000000001"
+      })
+    ).toThrow();
+    expect(() =>
+      emailLoginCodeVerifyRequestSchema.parse({
+        email: "mathew@example.com",
+        code: "001204",
+        rememberMe: true
+      })
+    ).toThrow();
+  });
+
+  it("parses only the approved generic email acknowledgements and capability flag", () => {
+    expect(
+      passwordResetEmailResponseSchema.parse({
+        message: "If an account exists for that email, we sent a password-reset link."
+      })
+    ).toEqual({
+      message: "If an account exists for that email, we sent a password-reset link."
+    });
+    expect(
+      emailLoginCodeRequestResponseSchema.parse({
+        message: "If an account exists for that email, we sent a sign-in code."
+      })
+    ).toEqual({
+      message: "If an account exists for that email, we sent a sign-in code."
+    });
+    expect(() =>
+      passwordResetEmailResponseSchema.parse({
+        message: "If an account exists, check your email."
+      })
+    ).toThrow();
+    expect(() =>
+      emailLoginCodeRequestResponseSchema.parse({
+        message: "If an account exists, check your email."
+      })
+    ).toThrow();
+
+    expect(
+      mvpConfigurationResponseSchema.parse({
+        registrationMode: "invite_only",
+        aiProvider: "mock",
+        externalAiEnabled: false,
+        agentEnabled: false,
+        emailSelfServiceEnabled: true
+      })
+    ).toMatchObject({ emailSelfServiceEnabled: true });
   });
 
   it("validates the complete onboarding contract", () => {

@@ -170,6 +170,12 @@ for (const file of sourceFiles) {
     }
   }
 
+  const isTestSource = /(?:^|[\\/])(?:test|e2e)(?:[\\/]|\.|-)|\.test\.[cm]?[jt]sx?$/u.test(
+    relativePath
+  );
+  if (!isTestSource && /\bre_[A-Za-z0-9_-]{24,}\b/u.test(content)) {
+    findings.push({ severity: "critical", code: "RESEND_STYLE_SECRET", file: relativePath });
+  }
   if (relativePath.startsWith(`apps${path.sep}web${path.sep}src${path.sep}`)) {
     if (content.includes("codelift_ai_curriculum_seed_v2_2026.json")) {
       findings.push({
@@ -212,6 +218,79 @@ const requiredControls = [
     markers: ["Invitation.findOneAndUpdate", "PasswordReset.findOneAndUpdate", "digestOpaqueToken"]
   },
   {
+    name: "HMAC-only email login codes with secure generation and constant-time comparison",
+    file: "apps/api/src/account/email-login-code.ts",
+    markers: ["createHmac", "randomInt", "timingSafeEqual", "codelift:email-login:v1"]
+  },
+  {
+    name: "digest-only hidden email login-code persistence",
+    file: "apps/api/src/persistence/models.ts",
+    markers: [
+      "codeDigest:",
+      "match: /^[0-9a-f]{64}$/",
+      "select: false",
+      "emailLoginCodeSchema.index({ expiresAt: 1 }"
+    ]
+  },
+  {
+    name: "delivery-gated hidden email credential digests",
+    file: "apps/api/src/account/service.ts",
+    markers: [
+      "sentAt: { $ne: null }",
+      '.select("+codeDigest")',
+      "acknowledgePasswordResetDelivery",
+      "acknowledgeEmailLoginCodeDelivery"
+    ]
+  },
+  {
+    name: "short issuance transactions and fail-closed delivery acknowledgement regressions",
+    file: "apps/api/src/test/m2.mongo.integration.test.ts",
+    markers: [
+      "ends code issuance transactions before provider and asynchronous timing work",
+      "ends issuance transactions before provider and asynchronous timing work",
+      "fails reset delivery closed after provider acceptance and %s acknowledgement",
+      "fails sign-in-code delivery closed after provider acceptance and %s acknowledgement",
+      "isolates a runtime email-provider outage"
+    ]
+  },
+  {
+    name: "opaque provider idempotency metadata and single-attempt Resend adapter",
+    file: "apps/api/src/account/transactional-email.ts",
+    markers: ["opaqueProviderIdempotencyKey", 'createHash("sha256")', "codelift-v1-"]
+  },
+  {
+    name: "strict file-backed production email secrets",
+    file: "apps/api/src/config.ts",
+    markers: [
+      "RESEND_API_KEY is unsupported",
+      "EMAIL_LOGIN_CODE_PEPPER is unsupported",
+      "RESEND_API_KEY_FILE",
+      "EMAIL_LOGIN_CODE_PEPPER_FILE",
+      "EMAIL_PROVIDER=fake is forbidden in production"
+    ]
+  },
+  {
+    name: "private API-only self-host email state",
+    file: "infra/selfhost/email-state.mjs",
+    markers: [
+      "validateResendKeySource",
+      "mode 0600",
+      "outside the repository",
+      "finalizeEmailKeyRotation",
+      "rollbackEmailKey"
+    ]
+  },
+  {
+    name: "guarded one-time synthetic browser email outbox",
+    file: "e2e/support/email-outbox.ts",
+    markers: ["guardedE2eEmailOutboxPath", "claim", "unlink", "example.test"]
+  },
+  {
+    name: "email request and verification limiter coverage",
+    file: "apps/api/src/account/router.ts",
+    markers: ["resetRequestLimiter", "emailCodeRequestLimiter", "emailCodeVerifyLimiter"]
+  },
+  {
     name: "versioned secret-free account export",
     file: "packages/contracts/src/account.ts",
     markers: ["codelift.account-export.v1", "containsForbiddenExportKey"]
@@ -252,7 +331,12 @@ const requiredControls = [
   {
     name: "account deletion cascade",
     file: "apps/api/src/account/service.ts",
-    markers: ["IndexedSource.deleteMany", "JobApplication.deleteMany", "Session.deleteMany"]
+    markers: [
+      "IndexedSource.deleteMany",
+      "JobApplication.deleteMany",
+      "EmailLoginCode.deleteMany",
+      "Session.deleteMany"
+    ]
   },
   {
     name: "non-root API container",
@@ -270,6 +354,48 @@ const requiredControls = [
     markers: ["Content-Security-Policy", "frame-ancestors 'none'", "immutable"]
   }
 ];
+
+const applicationSource = await readFile(path.join(root, "apps/api/src/app.ts"), "utf8");
+const healthStart = applicationSource.indexOf('app.get("/health"');
+const healthEnd = applicationSource.indexOf('app.get("/api/v1/curriculum/today"');
+const healthAndReadiness = applicationSource.slice(healthStart, healthEnd);
+if (
+  healthStart < 0 ||
+  healthEnd < 0 ||
+  /resend|emailProvider|\.sendPasswordReset|\.sendLoginCode|\bfetch\(/iu.test(healthAndReadiness)
+) {
+  findings.push({
+    severity: "critical",
+    code: "EMAIL_PROVIDER_READINESS_DEPENDENCY",
+    file: "apps/api/src/app.ts"
+  });
+}
+
+const resendSource = await readFile(
+  path.join(root, "apps/api/src/account/resend-email.ts"),
+  "utf8"
+);
+if (
+  (resendSource.match(/this\.#fetch\(/gu) ?? []).length !== 1 ||
+  /\b(?:retry|retries|backoff)\b/iu.test(stripSourceComments(resendSource, "resend-email.ts"))
+) {
+  findings.push({
+    severity: "critical",
+    code: "RESEND_AUTOMATIC_RETRY_DETECTED",
+    file: "apps/api/src/account/resend-email.ts"
+  });
+}
+
+for (const composeFile of ["infra/compose.selfhost.yaml", "infra/compose.production.yaml"]) {
+  const composeSource = await readFile(path.join(root, composeFile), "utf8");
+  if (/^[ \t]*(?:RESEND_API_KEY|EMAIL_LOGIN_CODE_PEPPER):/gmu.test(composeSource)) {
+    findings.push({
+      severity: "critical",
+      code: "DIRECT_EMAIL_SECRET_IN_COMPOSE",
+      file: composeFile
+    });
+  }
+}
 
 const controlResults = [];
 for (const control of requiredControls) {

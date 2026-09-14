@@ -4,7 +4,7 @@ import type {
   OnboardingProfile,
   ProgressDayResponse
 } from "@codelift/contracts";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -382,22 +382,41 @@ describe("M2 browser account journey", () => {
     window.history.replaceState(null, "", "/login?returnTo=%2Fapp%2Faccount");
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn<typeof fetch>()
-        .mockResolvedValueOnce(jsonResponse({ authenticated: false }))
-        .mockResolvedValueOnce(
-          jsonResponse({
-            csrfToken: "a".repeat(43),
-            expiresAt: "2026-07-25T00:00:00.000Z"
-          })
-        )
-        .mockResolvedValueOnce(
-          jsonResponse({
-            authenticated: true,
-            user,
-            csrfToken: "b".repeat(43)
-          })
-        )
+      vi.fn<typeof fetch>().mockImplementation((input, init) => {
+        const path = String(input);
+        if (path === "/api/v1/me") {
+          return Promise.resolve(jsonResponse({ authenticated: false }));
+        }
+        if (path === "/api/v1/auth/csrf") {
+          return Promise.resolve(
+            jsonResponse({
+              csrfToken: "a".repeat(43),
+              expiresAt: "2026-07-25T00:00:00.000Z"
+            })
+          );
+        }
+        if (path === "/api/v1/config") {
+          return Promise.resolve(
+            jsonResponse({
+              registrationMode: "open",
+              aiProvider: "mock",
+              externalAiEnabled: false,
+              agentEnabled: true,
+              emailSelfServiceEnabled: false
+            })
+          );
+        }
+        if (path === "/api/v1/auth/login" && init?.method === "POST") {
+          return Promise.resolve(
+            jsonResponse({
+              authenticated: true,
+              user,
+              csrfToken: "b".repeat(43)
+            })
+          );
+        }
+        return Promise.reject(new Error(`Unexpected test request: ${path}`));
+      })
     );
     const actor = userEvent.setup();
 
@@ -413,6 +432,372 @@ describe("M2 browser account journey", () => {
       await screen.findByRole("heading", { name: "Account and preferences" })
     ).toBeInTheDocument();
     expect(window.location.pathname).toBe("/app/account");
+  });
+
+  it("keeps password login primary while exposing enabled email access actions", async () => {
+    window.history.replaceState(null, "", "/login");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockImplementation((input) => {
+        const path = String(input);
+        if (path === "/api/v1/me") {
+          return Promise.resolve(jsonResponse({ authenticated: false }));
+        }
+        if (path === "/api/v1/auth/csrf") {
+          return Promise.resolve(
+            jsonResponse({
+              csrfToken: "a".repeat(43),
+              expiresAt: "2026-07-25T00:00:00.000Z"
+            })
+          );
+        }
+        if (path === "/api/v1/config") {
+          return Promise.resolve(
+            jsonResponse({
+              registrationMode: "open",
+              aiProvider: "mock",
+              externalAiEnabled: false,
+              agentEnabled: true,
+              emailSelfServiceEnabled: true
+            })
+          );
+        }
+        return Promise.reject(new Error(`Unexpected test request: ${path}`));
+      })
+    );
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Continue from the next useful step." })
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Forgot password?" })).toHaveAttribute(
+      "href",
+      "/forgot-password"
+    );
+    expect(screen.getByRole("button", { name: "Email me a sign-in code" })).toBeInTheDocument();
+  });
+
+  it("requests a password-reset email with generic status and clears the address", async () => {
+    window.history.replaceState(null, "", "/forgot-password");
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/me") {
+        return Promise.resolve(jsonResponse({ authenticated: false }));
+      }
+      if (path === "/api/v1/auth/csrf") {
+        return Promise.resolve(
+          jsonResponse({
+            csrfToken: "a".repeat(43),
+            expiresAt: "2026-07-25T00:00:00.000Z"
+          })
+        );
+      }
+      if (path === "/api/v1/auth/password-reset/request" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            { message: "If an account exists for that email, we sent a password-reset link." },
+            202
+          )
+        );
+      }
+      return Promise.reject(new Error(`Unexpected test request: ${path}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const actor = userEvent.setup();
+
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Reset your password" })).toBeInTheDocument();
+    const emailField = screen.getByLabelText("Email address");
+    expect(emailField).toHaveAttribute("autocomplete", "email");
+    await actor.type(emailField, "Learner@Example.com");
+    await actor.click(screen.getByRole("button", { name: "Email password-reset link" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "If an account exists for that email, we sent a password-reset link."
+    );
+    expect(emailField).toHaveValue("");
+    expect(screen.getByRole("link", { name: "Back to password sign in" })).toHaveAttribute(
+      "href",
+      "/login"
+    );
+    const resetCall = fetchMock.mock.calls.find(
+      ([path]) => path === "/api/v1/auth/password-reset/request"
+    );
+    expect(JSON.parse(String(resetCall?.[1]?.body))).toEqual({ email: "learner@example.com" });
+  });
+
+  it("keeps password-reset capability failures distinct and focused", async () => {
+    window.history.replaceState(null, "", "/forgot-password");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockImplementation((input, init) => {
+        const path = String(input);
+        if (path === "/api/v1/me") {
+          return Promise.resolve(jsonResponse({ authenticated: false }));
+        }
+        if (path === "/api/v1/auth/csrf") {
+          return Promise.resolve(
+            jsonResponse({
+              csrfToken: "a".repeat(43),
+              expiresAt: "2026-07-25T00:00:00.000Z"
+            })
+          );
+        }
+        if (path === "/api/v1/auth/password-reset/request" && init?.method === "POST") {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                type: "https://codelift.ai/problems/email-self-service-unavailable",
+                title: "Email account access unavailable",
+                status: 503,
+                detail: "Email account access is not enabled. Use the operator recovery path.",
+                requestId: "forgot-request-123"
+              },
+              503
+            )
+          );
+        }
+        return Promise.reject(new Error(`Unexpected test request: ${path}`));
+      })
+    );
+    const actor = userEvent.setup();
+
+    render(<App />);
+    await actor.type(await screen.findByLabelText("Email address"), "learner@example.com");
+    await actor.click(screen.getByRole("button", { name: "Email password-reset link" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Email account access is not enabled. Use the operator recovery path."
+    );
+    expect(alert).toHaveTextContent("Support reference: forgot-request-123");
+    expect(alert).toHaveFocus();
+    expect(screen.getByLabelText("Email address")).toHaveValue("learner@example.com");
+  });
+
+  it("requests and verifies one emailed code through the normal return path", async () => {
+    window.history.replaceState(null, "", "/login?returnTo=%2Fapp%2Faccount");
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/me") {
+        return Promise.resolve(jsonResponse({ authenticated: false }));
+      }
+      if (path === "/api/v1/auth/csrf") {
+        return Promise.resolve(
+          jsonResponse({
+            csrfToken: "a".repeat(43),
+            expiresAt: "2026-07-25T00:00:00.000Z"
+          })
+        );
+      }
+      if (path === "/api/v1/config") {
+        return Promise.resolve(
+          jsonResponse({
+            registrationMode: "open",
+            aiProvider: "mock",
+            externalAiEnabled: false,
+            agentEnabled: true,
+            emailSelfServiceEnabled: true
+          })
+        );
+      }
+      if (path === "/api/v1/auth/email-code/request" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            { message: "If an account exists for that email, we sent a sign-in code." },
+            202
+          )
+        );
+      }
+      if (path === "/api/v1/auth/email-code/verify" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse({
+            authenticated: true,
+            user,
+            csrfToken: "b".repeat(43)
+          })
+        );
+      }
+      return Promise.reject(new Error(`Unexpected test request: ${path}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const actor = userEvent.setup();
+
+    render(<App />);
+    await actor.type(await screen.findByLabelText("Email address"), "Learner@Example.com");
+    await actor.click(await screen.findByRole("button", { name: "Email me a sign-in code" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Sign in with an emailed code" })
+    ).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/login/email-code");
+    expect(window.location.search).toBe("?returnTo=%2Fapp%2Faccount");
+    expect(window.location.href).not.toContain("learner@example.com");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "If an account exists for that email, we sent a sign-in code."
+    );
+    const codeField = screen.getByLabelText("Sign-in code");
+    expect(codeField).toHaveAttribute("inputmode", "numeric");
+    expect(codeField).toHaveAttribute("autocomplete", "one-time-code");
+    expect(codeField).toHaveAttribute("pattern", "[0-9]{6}");
+    expect(codeField).toHaveAttribute("maxlength", "6");
+    await actor.click(codeField);
+    await actor.paste("001234");
+    expect(codeField).toHaveValue("001234");
+    expect(
+      fetchMock.mock.calls.filter(([path]) => path === "/api/v1/auth/email-code/verify")
+    ).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /Resend code in 60 seconds/ })).toBeDisabled();
+    await actor.click(screen.getByRole("button", { name: "Sign in with code" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Account and preferences" })
+    ).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/app/account");
+    const requestCall = fetchMock.mock.calls.find(
+      ([path]) => path === "/api/v1/auth/email-code/request"
+    );
+    expect(JSON.parse(String(requestCall?.[1]?.body))).toEqual({ email: "learner@example.com" });
+    const verifyCall = fetchMock.mock.calls.find(
+      ([path]) => path === "/api/v1/auth/email-code/verify"
+    );
+    expect(JSON.parse(String(verifyCall?.[1]?.body))).toEqual({
+      email: "learner@example.com",
+      code: "001234"
+    });
+  });
+
+  it("focuses generic code failure and preserves email when returning to password", async () => {
+    window.history.replaceState(null, "", "/login");
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/me") {
+        return Promise.resolve(jsonResponse({ authenticated: false }));
+      }
+      if (path === "/api/v1/auth/csrf") {
+        return Promise.resolve(
+          jsonResponse({
+            csrfToken: "a".repeat(43),
+            expiresAt: "2026-07-25T00:00:00.000Z"
+          })
+        );
+      }
+      if (path === "/api/v1/config") {
+        return Promise.resolve(
+          jsonResponse({
+            registrationMode: "open",
+            aiProvider: "mock",
+            externalAiEnabled: false,
+            agentEnabled: true,
+            emailSelfServiceEnabled: true
+          })
+        );
+      }
+      if (path === "/api/v1/auth/email-code/request" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            { message: "If an account exists for that email, we sent a sign-in code." },
+            202
+          )
+        );
+      }
+      if (path === "/api/v1/auth/email-code/verify" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              type: "https://codelift.ai/problems/invalid-email-login-code",
+              title: "Invalid sign-in code",
+              status: 401,
+              detail: "That code is invalid or expired. Request a new code and try again.",
+              requestId: "verify-code-request-123"
+            },
+            401
+          )
+        );
+      }
+      return Promise.reject(new Error(`Unexpected test request: ${path}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const actor = userEvent.setup();
+
+    render(<App />);
+    await actor.type(await screen.findByLabelText("Email address"), "Learner@Example.com");
+    await actor.click(await screen.findByRole("button", { name: "Email me a sign-in code" }));
+    const codeField = await screen.findByLabelText("Sign-in code");
+    await actor.type(codeField, "000001");
+    expect(
+      fetchMock.mock.calls.filter(([path]) => path === "/api/v1/auth/email-code/verify")
+    ).toHaveLength(0);
+    await actor.click(screen.getByRole("button", { name: "Sign in with code" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "That code is invalid or expired. Request a new code and try again."
+    );
+    expect(alert).toHaveTextContent("Support reference: verify-code-request-123");
+    expect(alert).toHaveFocus();
+    await actor.click(screen.getByRole("button", { name: "Use password instead" }));
+    expect(
+      await screen.findByRole("heading", { name: "Continue from the next useful step." })
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Email address")).toHaveValue("learner@example.com");
+    expect(screen.queryByLabelText("Sign-in code")).not.toBeInTheDocument();
+  });
+
+  it("keeps password login usable when email self-service is disabled", async () => {
+    window.history.replaceState(null, "", "/login");
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/me") {
+        return Promise.resolve(jsonResponse({ authenticated: false }));
+      }
+      if (path === "/api/v1/auth/csrf") {
+        return Promise.resolve(
+          jsonResponse({
+            csrfToken: "a".repeat(43),
+            expiresAt: "2026-07-25T00:00:00.000Z"
+          })
+        );
+      }
+      if (path === "/api/v1/config") {
+        return Promise.resolve(
+          jsonResponse({
+            registrationMode: "open",
+            aiProvider: "mock",
+            externalAiEnabled: false,
+            agentEnabled: true,
+            emailSelfServiceEnabled: false
+          })
+        );
+      }
+      if (path === "/api/v1/auth/login" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse({ authenticated: true, user, csrfToken: "b".repeat(43) })
+        );
+      }
+      if (path === "/api/v1/me/today") {
+        return Promise.resolve(jsonResponse(today()));
+      }
+      return Promise.reject(new Error(`Unexpected test request: ${path}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const actor = userEvent.setup();
+
+    render(<App />);
+    expect(
+      await screen.findByRole("heading", { name: "Continue from the next useful step." })
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Email me a sign-in code" })).toBeNull();
+      expect(screen.queryByRole("link", { name: "Forgot password?" })).toBeNull();
+    });
+    await actor.type(screen.getByLabelText("Email address"), user.email);
+    await actor.type(screen.getByLabelText("Password"), "Correct horse battery staple!");
+    await actor.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("heading", { name: "Today’s mission" })).toBeInTheDocument();
   });
 
   it("shows a neutral signed-out confirmation after deletion", async () => {
@@ -737,6 +1122,111 @@ describe("M2 browser account journey", () => {
     expect(screen.getByLabelText("Theme")).toHaveValue("dark");
     expect(screen.getByLabelText("Motion")).toHaveValue("reduced");
     expect(fetchMock.mock.calls.filter(([path]) => path === "/api/v1/me")).toHaveLength(2);
+  });
+
+  it("signs out from the global Workspace menu only after the server succeeds", async () => {
+    window.history.replaceState(null, "", "/app/today");
+    let finishLogout: (response: Response) => void = () => undefined;
+    const logoutResult = new Promise<Response>((resolve) => {
+      finishLogout = resolve;
+    });
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/me") {
+        return Promise.resolve(jsonResponse({ authenticated: true, user }));
+      }
+      if (path === "/api/v1/auth/csrf") {
+        return Promise.resolve(
+          jsonResponse({
+            csrfToken: "a".repeat(43),
+            expiresAt: "2026-07-25T00:00:00.000Z"
+          })
+        );
+      }
+      if (path === "/api/v1/me/today") {
+        return Promise.resolve(jsonResponse(today()));
+      }
+      if (path === "/api/v1/auth/logout" && init?.method === "POST") {
+        return logoutResult;
+      }
+      return Promise.reject(new Error(`Unexpected test request: ${path}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const actor = userEvent.setup();
+
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Today’s mission" })).toBeInTheDocument();
+    const workspaceSummary = screen.getByText("Workspace", { selector: "summary" });
+    await actor.click(workspaceSummary);
+    const workspaceMenu = workspaceSummary.closest("details");
+    if (workspaceMenu === null) throw new Error("Expected the Workspace details menu.");
+    const signOut = within(workspaceMenu).getByRole("button", { name: "Sign out" });
+    await actor.click(signOut);
+
+    expect(within(workspaceMenu).getByRole("button", { name: "Signing out…" })).toBeDisabled();
+    expect(screen.getByRole("heading", { name: "Today’s mission" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/app/today");
+    fireEvent.click(signOut);
+    expect(fetchMock.mock.calls.filter(([path]) => path === "/api/v1/auth/logout")).toHaveLength(1);
+
+    finishLogout(new Response(null, { status: 204 }));
+    expect(
+      await screen.findByRole("heading", { name: "Continue from the next useful step." })
+    ).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/login");
+  });
+
+  it("keeps authenticated content and focuses a global sign-out failure reference", async () => {
+    window.history.replaceState(null, "", "/app/account");
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/me") {
+        return Promise.resolve(jsonResponse({ authenticated: true, user }));
+      }
+      if (path === "/api/v1/auth/csrf") {
+        return Promise.resolve(
+          jsonResponse({
+            csrfToken: "a".repeat(43),
+            expiresAt: "2026-07-25T00:00:00.000Z"
+          })
+        );
+      }
+      if (path === "/api/v1/auth/logout" && init?.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              type: "https://codelift.ai/problems/service-unavailable",
+              title: "Sign out unavailable",
+              status: 503,
+              detail: "The server session remains active. Try signing out again.",
+              requestId: "logout-request-123"
+            },
+            503
+          )
+        );
+      }
+      return Promise.reject(new Error(`Unexpected test request: ${path}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const actor = userEvent.setup();
+
+    render(<App />);
+    expect(
+      await screen.findByRole("heading", { name: "Account and preferences" })
+    ).toBeInTheDocument();
+    const workspaceSummary = screen.getByText("Workspace", { selector: "summary" });
+    await actor.click(workspaceSummary);
+    const workspaceMenu = workspaceSummary.closest("details");
+    if (workspaceMenu === null) throw new Error("Expected the Workspace details menu.");
+    await actor.click(within(workspaceMenu).getByRole("button", { name: "Sign out" }));
+
+    const alert = await within(workspaceMenu).findByRole("alert");
+    expect(alert).toHaveTextContent("The server session remains active. Try signing out again.");
+    expect(alert).toHaveTextContent("Support reference: logout-request-123");
+    expect(alert).toHaveFocus();
+    expect(screen.getByRole("heading", { name: "Account and preferences" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/app/account");
+    expect(within(workspaceMenu).getByRole("button", { name: "Sign out" })).toBeEnabled();
   });
 
   it("applies persisted theme and reduced-motion preferences", async () => {

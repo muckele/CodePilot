@@ -8,7 +8,7 @@ x-hardening: &hardening
     driver: json-file
     options: { max-size: "5m", max-file: "3" }
 
-x-api-environment: &api-environment
+x-core-api-environment: &core-api-environment
   NODE_ENV: production
   API_PORT: "4000"
   WEB_ORIGIN: ${WEB_ORIGIN:?Set the exact HTTPS origin (local checkpoint uses https://codelift.localhost)}
@@ -20,6 +20,15 @@ x-api-environment: &api-environment
   AI_PROVIDER: mock
   AI_EXTERNAL_ENABLED: "false"
   AI_AGENT_ENABLED: "false"
+
+x-api-environment: &api-environment
+  <<: *core-api-environment
+  EMAIL_PROVIDER: ${EMAIL_PROVIDER:?Set EMAIL_PROVIDER to disabled or resend through protected operator state}
+  EMAIL_FROM: ${EMAIL_FROM:?Set EMAIL_FROM through protected operator state}
+  EMAIL_REPLY_TO: ${EMAIL_REPLY_TO:-}
+  EMAIL_REQUEST_TIMEOUT_MS: ${EMAIL_REQUEST_TIMEOUT_MS:?Set the bounded email provider timeout through protected operator state}
+  RESEND_API_KEY_FILE: /run/secrets/resend-api-key
+  EMAIL_LOGIN_CODE_PEPPER_FILE: /run/secrets/email-login-code-pepper
 
 services:
   mongodb:
@@ -109,7 +118,7 @@ services:
     cap_drop: [ALL]
     tmpfs: ["/tmp:size=32m,mode=1777"]
     environment: *api-environment
-    secrets: [mongo-uri]
+    secrets: [mongo-uri, resend-api-key, email-login-code-pepper]
     depends_on:
       mongodb: { condition: service_healthy }
     healthcheck:
@@ -158,7 +167,9 @@ services:
     restart: "no"
     cap_drop: [ALL]
     tmpfs: ["/tmp:size=32m,mode=1777"]
-    environment: *api-environment
+    environment:
+      <<: *core-api-environment
+      EMAIL_PROVIDER: disabled
     secrets: [mongo-uri]
     command: ["node", "apps/api/dist/seed/cli.js", "seed"]
     networks: [backend]
@@ -222,3 +233,7 @@ secrets:
     file: ${SELFHOST_STATE_ROOT:?Set operator state root}/secrets/mongo-uri
   mongo-backup-config:
     file: ${SELFHOST_STATE_ROOT:?Set operator state root}/secrets/mongo-backup.yml
+  resend-api-key:
+    file: ${RESEND_API_KEY_HOST_FILE:?Set the protected Resend key host file or /dev/null in disabled mode}
+  email-login-code-pepper:
+    file: ${EMAIL_LOGIN_CODE_PEPPER_HOST_FILE:?Set the protected login-code pepper host file or /dev/null in disabled mode}

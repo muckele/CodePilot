@@ -27,15 +27,26 @@
   container health checks, CI, deployment guidance, and local production builds
   are included; infrastructure credentials and domain/TLS ownership remain an
   operator decision.
-- Operator-issued invitation and reset URLs are intentionally out-of-band. The
-  product has no email delivery, verified-email flow, or self-service recovery;
-  a learner must contact the invitation operator through the trusted channel
-  used for pilot enrollment.
-- Public signup is not release-ready. It additionally requires verified email,
-  automated recovery/delivery, abuse and bot controls, public support staffing,
-  revised legal/privacy review, capacity/cost controls, and a larger-scale
-  observability and incident program. Production `open` registration is
-  rejected until those controls are deliberately implemented.
+- v0.1.1 implements self-service password-reset email and six-digit email
+  sign-in codes, but this repository has not configured a Resend account,
+  verified a sender/domain, changed DNS, created production email secrets, or
+  sent live email. The current private self-host state is deliberately
+  `EMAIL_PROVIDER=disabled`; operator-issued reset URLs remain the recovery path
+  until the separate email operator gate is completed.
+- Email provider acceptance cannot guarantee inbox delivery. CodeLift makes one
+  bounded attempt and does not automatically retry ambiguous sends. A runtime
+  outage returns generic email behavior without affecting readiness, password
+  login, existing sessions, learner functions, or operator recovery. The
+  external-provider portion of response timing remains a residual observation
+  surface despite generic responses and a 750 ms asynchronous floor.
+- Public signup is not release-ready. It additionally requires public email
+  verification, abuse and bot controls, public support staffing, revised
+  legal/privacy review, capacity/cost controls, and a larger-scale observability
+  and incident program. Production `open` registration is rejected until those
+  controls are deliberately implemented.
+- v0.1.1 does not include SMS, OAuth/social login, a fully passwordless account
+  conversion, provider delivery queues, background retry workers, or unrelated
+  account/profile product expansion.
 - Atlas Flex is a possible bounded-pilot database, not a blanket production
   recommendation. It has daily snapshots but no private endpoint, configurable
   snapshot schedule, continuous backup, or point-in-time recovery. Choose a

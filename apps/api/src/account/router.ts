@@ -2,11 +2,16 @@ import {
   authSessionResponseSchema,
   csrfResponseSchema,
   deleteAccountRequestSchema,
+  emailLoginCodeRequestResponseSchema,
+  emailLoginCodeRequestSchema,
+  emailLoginCodeVerifyRequestSchema,
   loginRequestSchema,
   meResponseSchema,
   mvpConfigurationResponseSchema,
   onboardingRequestSchema,
   onboardingResponseSchema,
+  passwordResetEmailRequestSchema,
+  passwordResetEmailResponseSchema,
   progressEvidenceRequestSchema,
   progressReflectionRequestSchema,
   progressStatusRequestSchema,
@@ -23,19 +28,51 @@ import { HttpProblem, sendProblem } from "../http/problem.js";
 import { createLearningRouter } from "../learning/router.js";
 import { LearningService } from "../learning/service.js";
 import type { PersistenceRuntime } from "../persistence/runtime.js";
+import { buildAccountAccessUrl } from "./access-operator.js";
 import { AccountService, type SessionIdentity } from "./service.js";
+import {
+  opaqueProviderIdempotencyKey,
+  type TransactionalEmailProvider
+} from "./transactional-email.js";
 
 export type AccountRuntime =
   | {
       readonly status: "ready";
       readonly service: AccountService;
       readonly learning: LearningService;
+      readonly emailProvider: TransactionalEmailProvider;
     }
   | {
       readonly status: "unavailable";
+      readonly emailProvider: TransactionalEmailProvider;
     };
 
 type AsyncHandler = (request: Request, response: Response, next: NextFunction) => Promise<void>;
+
+export interface EmailRequestTiming {
+  nowMs(): number;
+  sleep(milliseconds: number): Promise<void>;
+}
+
+const defaultEmailRequestTiming: EmailRequestTiming = {
+  nowMs: () => performance.now(),
+  sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+};
+
+async function withPublicEmailResponseFloor(
+  timing: EmailRequestTiming,
+  operation: () => Promise<void>
+): Promise<void> {
+  const startedAt = timing.nowMs();
+  try {
+    await operation();
+  } finally {
+    const remaining = 750 - (timing.nowMs() - startedAt);
+    if (remaining > 0) {
+      await timing.sleep(remaining);
+    }
+  }
+}
 
 function asyncHandler(handler: AsyncHandler) {
   return (request: Request, response: Response, next: NextFunction): void => {
@@ -170,11 +207,13 @@ export async function initializeAccountRuntime(
   persistence: PersistenceRuntime,
   options: Omit<Parameters<typeof AccountService.create>[0], "models"> & {
     aiConfig: ApiConfig["ai"];
+    emailProvider: TransactionalEmailProvider;
   }
 ): Promise<AccountRuntime> {
   if (persistence.status !== "ready") {
     return {
-      status: "unavailable"
+      status: "unavailable",
+      emailProvider: options.emailProvider
     };
   }
 
@@ -185,6 +224,7 @@ export async function initializeAccountRuntime(
   return {
     status: "ready",
     service,
+    emailProvider: options.emailProvider,
     learning: new LearningService({
       models: persistence.models,
       curriculum: options.curriculum,
@@ -197,6 +237,7 @@ export async function initializeAccountRuntime(
 export function createAccountRouter(options: {
   config: ApiConfig;
   runtime: AccountRuntime;
+  emailRequestTiming?: EmailRequestTiming;
 }): Router {
   const router = Router();
   router.use((_request, response, next) => {
@@ -210,7 +251,8 @@ export function createAccountRouter(options: {
         registrationMode: options.config.registration.mode,
         aiProvider: options.config.ai.provider,
         externalAiEnabled: options.config.ai.externalEnabled,
-        agentEnabled: options.config.ai.agentEnabled
+        agentEnabled: options.config.ai.agentEnabled,
+        emailSelfServiceEnabled: options.config.email.provider !== "disabled"
       })
     );
   });
@@ -223,6 +265,9 @@ export function createAccountRouter(options: {
   }
 
   const service = options.runtime.service;
+  const emailRequestTiming = options.emailRequestTiming ?? defaultEmailRequestTiming;
+  const csrfLimit =
+    options.config.nodeEnv === "test" && options.config.email.fakeOutboxDir !== null ? 600 : 60;
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1_000,
     limit: 30,
@@ -239,7 +284,7 @@ export function createAccountRouter(options: {
   });
   const csrfLimiter = rateLimit({
     windowMs: 15 * 60 * 1_000,
-    limit: 60,
+    limit: csrfLimit,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     handler(_request, response) {
@@ -262,6 +307,48 @@ export function createAccountRouter(options: {
         title: "Too many attempts",
         status: 429,
         detail: "Wait before trying another recovery link."
+      });
+    }
+  });
+  const resetRequestLimiter = rateLimit({
+    windowMs: 15 * 60 * 1_000,
+    limit: 5,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler(_request, response) {
+      sendProblem(response, {
+        type: "https://codelift.ai/problems/rate-limit-exceeded",
+        title: "Too many attempts",
+        status: 429,
+        detail: "Wait before requesting another password-reset email."
+      });
+    }
+  });
+  const emailCodeRequestLimiter = rateLimit({
+    windowMs: 15 * 60 * 1_000,
+    limit: 5,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler(_request, response) {
+      sendProblem(response, {
+        type: "https://codelift.ai/problems/rate-limit-exceeded",
+        title: "Too many attempts",
+        status: 429,
+        detail: "Wait before requesting another sign-in code."
+      });
+    }
+  });
+  const emailCodeVerifyLimiter = rateLimit({
+    windowMs: 15 * 60 * 1_000,
+    limit: 20,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler(_request, response) {
+      sendProblem(response, {
+        type: "https://codelift.ai/problems/rate-limit-exceeded",
+        title: "Too many attempts",
+        status: 429,
+        detail: "Wait before trying another sign-in code."
       });
     }
   });
@@ -340,6 +427,142 @@ export function createAccountRouter(options: {
       const identity = await verifiedIdentity(request);
       const input = parseBody(loginRequestSchema, request.body);
       const result = await service.login(identity, input.email, input.password);
+      setSessionCookie(response, options.config, result.sessionToken, result.expiresAt);
+      response.status(200).json(
+        authSessionResponseSchema.parse({
+          authenticated: true,
+          user: result.user,
+          csrfToken: result.csrfToken
+        })
+      );
+    })
+  );
+
+  router.post(
+    "/auth/password-reset/request",
+    resetRequestLimiter,
+    asyncHandler(async (request, response) => {
+      await verifiedIdentity(request);
+      const input = parseBody(passwordResetEmailRequestSchema, request.body);
+      if (options.config.email.provider === "disabled") {
+        throw new HttpProblem({
+          type: "https://codelift.ai/problems/email-self-service-unavailable",
+          title: "Email account access unavailable",
+          status: 503,
+          detail: "Email account access is not enabled. Use the operator recovery path."
+        });
+      }
+
+      await withPublicEmailResponseFloor(emailRequestTiming, async () => {
+        await service.recordPilotEventBestEffort("password_reset_requested");
+        const issued = await service.issueSelfServicePasswordReset(input.email);
+        if (issued.kind === "issued") {
+          let delivered = false;
+          try {
+            await options.runtime.emailProvider.sendPasswordReset({
+              to: issued.email,
+              resetUrl: buildAccountAccessUrl(
+                options.config.webOrigin,
+                "password_reset",
+                issued.token
+              ),
+              expiresAt: issued.expiresAt,
+              idempotencyKey: opaqueProviderIdempotencyKey("password-reset", issued.id)
+            });
+            delivered = await service.acknowledgePasswordResetDelivery(issued.id);
+          } catch {
+            delivered = false;
+          }
+
+          if (delivered) {
+            await service.recordPilotEventBestEffort("password_reset_email_sent");
+          } else {
+            try {
+              await service.revokePasswordResetDelivery(issued.id);
+            } catch {
+              // Verification remains delivery-gated; the public result stays generic.
+            }
+            await service.recordPilotEventBestEffort("password_reset_email_failed");
+          }
+        }
+      });
+
+      response.status(202).json(
+        passwordResetEmailResponseSchema.parse({
+          message: "If an account exists for that email, we sent a password-reset link."
+        })
+      );
+    })
+  );
+
+  router.post(
+    "/auth/email-code/request",
+    emailCodeRequestLimiter,
+    asyncHandler(async (request, response) => {
+      await verifiedIdentity(request);
+      const input = parseBody(emailLoginCodeRequestSchema, request.body);
+      if (options.config.email.provider === "disabled") {
+        throw new HttpProblem({
+          type: "https://codelift.ai/problems/email-self-service-unavailable",
+          title: "Email account access unavailable",
+          status: 503,
+          detail: "Email account access is not enabled. Use the operator recovery path."
+        });
+      }
+
+      await withPublicEmailResponseFloor(emailRequestTiming, async () => {
+        await service.recordPilotEventBestEffort("email_login_code_requested");
+        const issued = await service.issueEmailLoginCode(input.email);
+        if (issued.kind === "issued") {
+          let delivered = false;
+          try {
+            await options.runtime.emailProvider.sendLoginCode({
+              to: issued.email,
+              code: issued.code,
+              expiresAt: issued.expiresAt,
+              idempotencyKey: opaqueProviderIdempotencyKey("email-login-code", issued.id)
+            });
+            delivered = await service.acknowledgeEmailLoginCodeDelivery(issued.id);
+          } catch {
+            delivered = false;
+          }
+
+          if (!delivered) {
+            try {
+              await service.revokeEmailLoginCodeDelivery(issued.id);
+            } catch {
+              // Verification remains delivery-gated; the public result stays generic.
+            }
+          }
+          await service.recordPilotEventBestEffort(
+            delivered ? "email_login_code_email_sent" : "email_login_code_email_failed"
+          );
+        }
+      });
+
+      response.status(202).json(
+        emailLoginCodeRequestResponseSchema.parse({
+          message: "If an account exists for that email, we sent a sign-in code."
+        })
+      );
+    })
+  );
+
+  router.post(
+    "/auth/email-code/verify",
+    emailCodeVerifyLimiter,
+    asyncHandler(async (request, response) => {
+      const identity = await verifiedIdentity(request);
+      const input = parseBody(emailLoginCodeVerifyRequestSchema, request.body);
+      if (options.config.email.provider === "disabled") {
+        throw new HttpProblem({
+          type: "https://codelift.ai/problems/email-self-service-unavailable",
+          title: "Email account access unavailable",
+          status: 503,
+          detail: "Email account access is not enabled. Use the operator recovery path."
+        });
+      }
+      const result = await service.verifyEmailLoginCode(identity, input.email, input.code);
       setSessionCookie(response, options.config, result.sessionToken, result.expiresAt);
       response.status(200).json(
         authSessionResponseSchema.parse({

@@ -25,8 +25,11 @@ public address in product copy.
   Mongo failure, or integrity regression without confirmed disclosure. Close
   registration and stabilize/roll back. Target acknowledgment: 15 minutes.
 - **SEV-2:** degraded latency, elevated provider fallback, isolated recoverable
-  UX defect, or support issue with a safe workaround. Preserve mock learning
-  path and schedule a bounded fix.
+  UX defect, transactional-email provider outage with password/session/operator
+  access intact, or support issue with a safe workaround. Preserve available
+  learning and account paths and schedule a bounded fix. A provider outage is
+  not a readiness incident unless it also breaks the application readiness
+  contract.
 
 Alert/triage thresholds for a 5–20-person pilot:
 
@@ -38,8 +41,12 @@ Alert/triage thresholds for a 5–20-person pilot:
 - AI errors plus fallbacks over 20% for 15 minutes with at least 10 interactions;
 - more than 20 failed login/reset attempts from one normalized client in 15
   minutes, or a sudden cohort-wide authentication failure;
+- sustained password-reset/sign-in-code delivery failure over 20% for 15
+  minutes with at least 10 requests; verify password login, existing sessions,
+  operator recovery, `/health`, and `/ready` before escalating severity;
 - any raw invite/reset token, credential, request body, private note,
-  reflection, or evidence text observed in centralized logs.
+  reflection, evidence text, six-digit code, mailbox, user/internal ID,
+  provider idempotency key, or provider response observed in centralized logs.
 
 The repository emits privacy-minimized structured request/error logs but does
 not provision a log/alert vendor. Missing alert routing blocks a live pilot.
@@ -48,8 +55,10 @@ not provision a log/alert vendor. Missing alert routing blocks a live pilot.
 
 1. **Contain:** set `REGISTRATION_MODE=closed`; revoke the affected invitation,
    reset, session, or provider secret; disable `AI_EXTERNAL_ENABLED` and
-   `AI_AGENT_ENABLED`; use the provider kill switch if relevant. Preserve the
-   deterministic mock path only when it is not implicated.
+   `AI_AGENT_ENABLED`; use the provider kill switch if relevant. For an email
+   incident, use the protected `email-disable` workflow rather than deleting
+   files or changing Compose by hand. Preserve password login, established
+   sessions, learner routes, and operator recovery unless they are implicated.
 2. **Identify:** record UTC timeline, release SHA, request IDs, normalized route,
    status, latency, sanitized error name, provider outcome, and aggregate
    counts. Never increase logging to capture raw private content or bearer URLs.
@@ -70,6 +79,30 @@ not provision a log/alert vendor. Missing alert routing blocks a live pilot.
 7. **Review:** record impact, root cause, detection gap, learner notification,
    residual risk, and an ADR/threat-model/runbook update within two business
    days. Notify affected learners honestly if their data crossed a boundary.
+
+## Transactional-email incidents
+
+- **Provider outage or timeout:** keep the application running, confirm no
+  Resend probe exists in health/readiness, and use operator-issued reset links
+  through the established trusted channel for urgent recovery. Do not add an
+  automatic send retry or extend a Mongo transaction around provider work.
+- **Ambiguous provider acceptance:** confirm the affected reset/code remains
+  unacknowledged and revoked/unverifiable. Never disclose it or mark `sentAt`
+  manually. The learner must request a new credential through the bounded flow.
+- **Resend key exposure:** disable email, revoke/rotate the key at the provider
+  through an explicitly authorized operator action, install the replacement
+  using `email-rotate-key`, restart/verify, perform one authorized synthetic
+  send, then finalize or roll back the retained key. Do not place either key in
+  chat, shell arguments, evidence, or tickets.
+- **Login-code pepper exposure or loss:** create a fresh encrypted backup, stop
+  the API, rotate the pepper with explicit active-code invalidation, and restart.
+  The self-host `email-rotate-pepper --invalidate-active-codes` command enforces
+  that sequence. Notify learners only that outstanding codes were invalidated;
+  never attempt to recover or log them.
+- **Unexpected provider metadata/content:** treat any raw internal ID, user ID,
+  token, code, session value, or unintended content as a potential disclosure.
+  Preserve only sanitized provider audit references and follow the security/data
+  owner’s containment decision.
 
 Never use the numeric quality score to waive an auth bypass, cross-user
 disclosure, data loss, unsafe tool action, fabricated success, missing alert

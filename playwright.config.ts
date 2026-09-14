@@ -4,6 +4,7 @@ import {
   E2E_API_URL,
   E2E_BASE_URL,
   E2E_DATABASE_NAME,
+  E2E_EMAIL_OUTBOX_DIR,
   E2E_MONGO_URI
 } from "./e2e/support/environment.js";
 
@@ -58,6 +59,8 @@ export default defineConfig({
         MONGO_URI: E2E_MONGO_URI,
         MONGO_DB_NAME: E2E_DATABASE_NAME,
         CODELIFT_E2E_MONGO_URI: E2E_MONGO_URI,
+        EMAIL_PROVIDER: "fake",
+        EMAIL_FAKE_OUTBOX_DIR: E2E_EMAIL_OUTBOX_DIR,
         AI_PROVIDER: "python_mock",
         AI_PYTHON_BASE_URL: "http://127.0.0.1:9",
         AI_TIMEOUT_MS: "500",

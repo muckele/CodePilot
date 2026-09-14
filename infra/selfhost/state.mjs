@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareEmailState } from "./email-state.mjs";
 
 export const stateRoot = "/Users/Matt/Library/Application Support/CodeLift AI Self-Host";
 const secretNames = [
@@ -59,6 +60,7 @@ export function initializeState(root = stateRoot) {
       throw new Error("Invalid operator URI; restore the original secret.");
     if (!existsSync(join(root, "ops", "backup-recipient.pem")))
       throw new Error("Incomplete backup recipient setup.");
+    prepareEmailState(root);
     return;
   }
   const writeSecret = (name, content) =>
@@ -104,6 +106,7 @@ export function initializeState(root = stateRoot) {
     `SELFHOST_STATE_ROOT='${root}'\nSELFHOST_UID=${process.getuid()}\nSELFHOST_GID=${process.getgid()}\nWEB_ORIGIN=https://codelift.localhost\nTRUST_PROXY_HOPS=1\n`,
     { mode: 0o600, flag: "wx" }
   );
+  prepareEmailState(root);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

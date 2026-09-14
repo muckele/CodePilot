@@ -1,0 +1,1 @@
+export const BROWSER_EVIDENCE_VERSION = 3;

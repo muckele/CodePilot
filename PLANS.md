@@ -2,12 +2,13 @@
 
 ## Status
 
-- Current milestone: **M16.3B — private self-host local implementation and verification**
-- State: local three-service stack, encrypted backup/isolated restore, and
-  restart persistence verified on `codex/selfhost-private-mvp`, isolated from
-  verified source baseline `5e85e6463f30f2d5c069941e282335784718659c`.
-  The changed revision still requires its clean-commit aggregate and exact-SHA CI.
-- Updated: 2026-09-08 (America/Los_Angeles)
+- Current milestone: **M17 — v0.1.1 self-service account access**
+- State: approved account-access design and follow-up guardrails implemented on
+  `codex/v0.1.1-auth-access` through strict RED → GREEN slices. Focused unit,
+  real-Mongo, browser, and private self-host verification is green; the final
+  clean-commit aggregate and exact-SHA CI remain release gates. Resend operator
+  setup, DNS, production secrets, purchase, and live delivery are not performed.
+- Updated: 2026-09-13 (America/Los_Angeles)
 - Passing threshold: 95/100 with zero critical failures
 
 ## User value
@@ -41,6 +42,9 @@ bounded weekly plan without a paid API or model download.
 12. bounded approval-gated planning and read-only MCP demo;
 13. Compose/CI, architecture, ADRs, runbooks, curriculum, deployment, and
     portfolio documentation.
+14. preserved password login, global sign out, self-service password-reset
+    email, and six-digit email sign-in codes with delivery-gated credentials,
+    runtime provider-outage isolation, and disabled-by-default operator state.
 
 ## Final acceptance checks
 
@@ -56,7 +60,9 @@ bounded weekly plan without a paid API or model download.
 
 ## Security and privacy implications
 
-The browser calls only Node. External AI requires server enablement, profile
+The browser calls only Node. Account email is API-owned, file-secret-backed,
+disabled by default, and excluded from health/readiness; issued credentials are
+HMAC/digest-only and unusable until delivery acknowledgement commits. External AI requires server enablement, profile
 opt-in, per-request consent, and a disabled kill switch. Every user-owned query
 is scoped, private inputs are hashed in traces, model output is runtime parsed,
 the planner is read-only until approval, and account deletion cascades product
@@ -168,6 +174,9 @@ evidence, not a substitute for those operator-owned production controls.
 - local model hardware/licensing varies; the base path must remain no-download;
 - hosted production infrastructure is operator-owned; Compose/build/readiness
   evidence is not a claim of a live deployment;
+- transactional email remains operator-disabled until Resend sender/DNS and
+  protected key/pepper setup plus an authorized synthetic live send are proven;
+  provider acceptance still cannot guarantee inbox placement;
 - browser suspension can skew elapsed wall clock, so actual minutes stay
   learner-authored.
 
@@ -352,3 +361,40 @@ passed both safety paths afterward. Seven exact timestamp/label-proven empty
 test volumes were removed non-force, returning inventory to 64 while retaining
 all other volumes. This correction uses an ordinary follow-up commit without
 rewriting the preceding commit or its verified backup.
+
+## 2026-09-13 M17 v0.1.1 self-service account access
+
+The accepted design at `94fd9cd` is extended by a separate follow-up design
+commit containing four implementation guardrails: Resend is not a runtime
+availability dependency; provider-success/database-acknowledgement failure is
+fail-closed; provider idempotency metadata is opaque; and provider/timing work
+occurs only after issuance transactions commit. The detailed implementation
+plan then divides contracts, configuration, provider, delivery-state,
+password-reset, sign-in-code, session, navigation, browser, operator, and
+release-truth work into reviewable RED → GREEN slices.
+
+Implemented scope:
+
+- preserve password login and operator-issued recovery compatibility;
+- add global protected-shell sign out with server-confirmed session invalidation;
+- add generic, timing-equalized Forgot password email requests and reset-link
+  completion with all-session revocation;
+- add generic, timing-equalized six-digit email-code requests and one-time
+  session creation without removing the password;
+- gate both credential types on a conditional committed delivery
+  acknowledgement and revoke ambiguous provider-success/acknowledgement faults;
+- generate only opaque SHA-256-derived provider idempotency keys and make one
+  bounded Resend attempt;
+- isolate runtime email failure from application health/readiness and all
+  non-email access/learning behavior;
+- keep production email secrets in exact API-only files, default private
+  self-host operation to disabled, and cover provider-key/pepper rotation; and
+- use only a private, one-time, synthetic fake outbox for browser verification.
+
+Explicit exclusions remain SMS, OAuth/social login, a fully passwordless
+conversion, open-registration work, provider queues/retries, and unrelated
+product changes. The source workflow performs no Resend account/DNS mutation,
+production secret creation, purchase, or live send. See
+[ADR 0009](docs/adr/0009-self-service-account-access.md),
+[M17 acceptance](docs/milestones/17-self-service-account-access.md), and the
+[approved implementation plan](docs/superpowers/plans/2026-09-13-v0.1.1-auth-access.md).

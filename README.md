@@ -12,9 +12,10 @@ without a paid API key or downloaded model.
 ## What is implemented
 
 - closed/invitation-only/open registration policy, email-bound one-time
-  invitations, operator-issued password recovery, all-session reset revocation,
-  login/logout, onboarding, protected routes, preferences, versioned account
-  export, and transactional account deletion;
+  invitations, preserved password login, globally accessible sign out,
+  operator-issued recovery, self-service password-reset email, six-digit email
+  sign-in codes, all-session reset revocation, onboarding, protected routes,
+  preferences, versioned account export, and transactional account deletion;
 - Argon2id passwords, hashed opaque HTTP-only sessions, exact-origin CSRF,
   Helmet, explicit CORS, body/rate limits, request IDs, and generic auth errors;
 - 365 deterministic display-ready missions with a 30-minute Core path, ≤5-minute
@@ -53,6 +54,7 @@ flowchart LR
   Node --> Mongo[("MongoDB product state")]
   Node --> Curriculum["Immutable enriched 365-day curriculum"]
   Node -->|"typed internal HTTP + timeout"| Python["FastAPI AI/data service"]
+  Node -. "configured transactional email; not readiness" .-> Resend["Resend"]
   Python --> Mock["Deterministic providers"]
   Python -. optional .-> Local["Ollama-compatible local model"]
   Node -. explicit learner opt-in .-> OpenAI["Optional Responses API"]
@@ -85,6 +87,8 @@ authenticated MongoDB replica set with persistent storage, conservative
 resource limits, and only `127.0.0.1:8080` published. It defaults to
 invitation-only/mock mode, consumes individual secret files outside the
 repository, and includes encrypted local backup plus an isolated restore drill.
+Transactional email is disabled by default; enabling it requires the explicit
+file-backed operator workflow and does not add a live provider readiness probe.
 Follow the [self-host runbook](docs/runbooks/self-host.md). Public HTTPS, a real
 secure-cookie browser journey, off-device backup, and reboot/power verification
 remain separate gates; the full development demo below is unchanged.
@@ -187,6 +191,11 @@ root `.env`.
 | `PERSISTENCE_MODE`                 | `optional` public-preview degradation or `required` | production: `required`    |
 | `MONGO_URI` / `MONGO_DB_NAME`      | Mongo replica connection and database               | documented local values   |
 | `REGISTRATION_MODE`                | `closed`, `invite_only`, or development-only `open` | production: `invite_only` |
+| `EMAIL_PROVIDER`                   | transactional account email: `disabled` or `resend` | `disabled`                |
+| `EMAIL_FROM` / `EMAIL_REPLY_TO`    | normalized delivery mailboxes                       | empty                     |
+| `EMAIL_REQUEST_TIMEOUT_MS`         | bounded single provider-attempt timeout             | `5000`                    |
+| `RESEND_API_KEY_FILE`              | API-only provider-key file; direct value forbidden  | none                      |
+| `EMAIL_LOGIN_CODE_PEPPER_FILE`     | independent API-only code-HMAC pepper file          | none                      |
 | `AI_PROVIDER`                      | `mock`, `python_mock`, `local`, or `openai`         | `mock`                    |
 | `AI_PYTHON_BASE_URL`               | internal FastAPI URL                                | `http://127.0.0.1:8000`   |
 | `AI_LOCAL_BASE_URL`                | Ollama-compatible URL                               | `http://127.0.0.1:11434`  |
@@ -208,8 +217,9 @@ their validity at runtime.
 
 Production additionally rejects an implicit or HTTP web origin, optional
 persistence, missing Mongo, unsafe OpenAI configuration, and open registration.
-Open registration remains a future public-launch project because verified
-email, automated recovery, and abuse operations are not part of this pilot.
+Open registration remains a future public-launch project because public email
+verification, abuse/bot response, support staffing, and capacity controls are
+not part of this pilot.
 
 ## Private-pilot access and account lifecycle
 
@@ -236,8 +246,19 @@ MONGO_URI='<managed replica-set URI>' \
 ```
 
 An invitation is bound to the normalized email and consumed atomically with
-account creation. A reset is single-use, replaces the Argon2id password, and
-revokes every active session. The browser never renders link-supplied tokens.
+account creation. An operator or delivered self-service reset is single-use,
+replaces the Argon2id password, and revokes every active session. A delivered
+six-digit sign-in code creates a normal server-owned session without removing
+the account password. The browser never renders link-supplied tokens.
+
+Self-service email requests deliberately return the same `202` response for
+known and unknown addresses and wait for an asynchronous 750 ms response floor.
+Issuance commits before the one bounded provider attempt. A reset or code is
+usable only after its conditional delivery acknowledgement commits; ambiguous
+provider-success/database-acknowledgement failures revoke it. Resend is not
+called by `/health` or `/ready`, and a runtime provider outage cannot block
+password login, existing sessions, learner functionality, or operator recovery.
+See [ADR 0009](docs/adr/0009-self-service-account-access.md).
 Privacy, terms, and support are public at `/privacy`, `/terms`, and `/support`.
 Authenticated settings provide a versioned JSON export plus deliberate account
 deletion. See the [data lifecycle runbook](docs/runbooks/data-lifecycle.md).
@@ -328,8 +349,9 @@ pnpm quality:report
 ```
 
 `test:integration`, `test:e2e`, seed commands, and the final quality report
-require the local Mongo replica set. `test:e2e` runs real Chromium journeys with
-isolated test users and a guarded `_e2e_test` database. The separate
+require the local Mongo replica set. `test:e2e` runs real Chromium and
+mobile-WebKit journeys with isolated test users, a guarded `_e2e_test` database,
+and a private one-time synthetic email outbox; it never sends live email. The separate
 `browser:evidence` command validates the source-digest-bound manual visual
 record; manual evidence supplements, and never substitutes for, Playwright.
 The repeated seed is intentional and proves idempotency. `compose:smoke` builds
@@ -411,9 +433,11 @@ See [deployment](docs/deployment.md), [release checklist](docs/release-checklist
 pilot options without provisioning them, and [release governance](docs/release-governance.md)
 records the draft-PR/default-branch/protection procedure.
 
-Production needs TLS, exact `WEB_ORIGIN`, private service networking, secret
-injection, Mongo replica availability/backups, resource budgets, monitoring,
-and readiness routing. The repository intentionally does not fabricate a hosted
+Production needs TLS, exact `WEB_ORIGIN`, private service networking,
+file-backed secret injection, Mongo replica availability/backups, resource
+budgets, monitoring, and readiness routing. Email delivery additionally needs
+explicit provider/sender/DNS setup and an authorized synthetic live-send check;
+none is claimed here. The repository intentionally does not fabricate a hosted
 production URL. A clean source gate means source-ready; a live pilot additionally
 requires an approved environment, centralized alerts, a successful isolated
 backup restore, and the guarded HTTPS journey documented in the deployment guide.

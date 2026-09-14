@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import "./release-quality-scoring.test.mjs";
 import { fullSourceStatusArguments, releaseSourceState } from "./release-source-state.mjs";
 
 test("requests every untracked path when checking release-source cleanliness", () => {

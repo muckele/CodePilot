@@ -3,10 +3,18 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildAccountAccessUrl } from "../account/access-operator.js";
 import { loadApiConfig } from "../config.js";
+
+const productionEnvironment = {
+  NODE_ENV: "production",
+  WEB_ORIGIN: "https://pilot.example.test",
+  TRUST_PROXY_HOPS: "1",
+  PERSISTENCE_MODE: "required",
+  MONGO_URI: "mongodb+srv://cluster.example.test/codelift"
+} as const;
 
 describe("API M2 configuration", () => {
   it("lets the seed CLI consume the same secret-file boundary without injecting a default URI", () => {
@@ -88,6 +96,224 @@ describe("API M2 configuration", () => {
     });
     expect(config.trustProxyHops).toBe(0);
     expect(config.registration.mode).toBe("open");
+    expect(config.email).toEqual({
+      provider: "disabled",
+      from: null,
+      replyTo: null,
+      requestTimeoutMs: 5_000,
+      resendApiKey: null,
+      loginCodePepper: null,
+      fakeOutboxDir: null
+    });
+  });
+
+  it("enables the network-free fake provider only with test-safe state", () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      const config = loadApiConfig({
+        NODE_ENV: "test",
+        REGISTRATION_MODE: "closed",
+        EMAIL_PROVIDER: "fake"
+      });
+
+      expect(config.email).toMatchObject({
+        provider: "fake",
+        from: null,
+        replyTo: null,
+        requestTimeoutMs: 5_000,
+        resendApiKey: null,
+        fakeOutboxDir: null
+      });
+      expect(config.email.loginCodePepper).toBeInstanceOf(Buffer);
+      expect(config.email.loginCodePepper).toHaveLength(32);
+      expect(
+        loadApiConfig({
+          NODE_ENV: "test",
+          REGISTRATION_MODE: "closed",
+          EMAIL_PROVIDER: "fake",
+          EMAIL_REQUEST_TIMEOUT_MS: "1000"
+        }).email.requestTimeoutMs
+      ).toBe(1_000);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("loads valid Resend files without making provider reachability a startup dependency", () => {
+    const directory = mkdtempSync(join(tmpdir(), "codelift-email-config-"));
+    const apiKeyPath = join(directory, "resend-key");
+    const pepperPath = join(directory, "login-code-pepper");
+    const apiKey = `re_${"a".repeat(29)}`;
+    const pepper = Buffer.alloc(32, 7);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      writeFileSync(apiKeyPath, `${apiKey}\n`, { mode: 0o600 });
+      writeFileSync(pepperPath, `${pepper.toString("base64url")}\n`, { mode: 0o600 });
+
+      const config = loadApiConfig({
+        ...productionEnvironment,
+        EMAIL_PROVIDER: "resend",
+        EMAIL_FROM: "security@pilot.example.test",
+        EMAIL_REPLY_TO: "support@pilot.example.test",
+        RESEND_API_KEY_FILE: apiKeyPath,
+        EMAIL_LOGIN_CODE_PEPPER_FILE: pepperPath,
+        EMAIL_REQUEST_TIMEOUT_MS: "10000"
+      });
+
+      expect(config.email).toEqual({
+        provider: "resend",
+        from: "security@pilot.example.test",
+        replyTo: "support@pilot.example.test",
+        requestTimeoutMs: 10_000,
+        resendApiKey: apiKey,
+        loginCodePepper: pepper,
+        fakeOutboxDir: null
+      });
+      expect(
+        loadApiConfig({
+          ...productionEnvironment,
+          EMAIL_PROVIDER: "resend",
+          EMAIL_FROM: "security@pilot.example.test",
+          EMAIL_REPLY_TO: "",
+          RESEND_API_KEY_FILE: apiKeyPath,
+          EMAIL_LOGIN_CODE_PEPPER_FILE: pepperPath
+        }).email.replyTo
+      ).toBeNull();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for unsupported email providers and direct secrets", () => {
+    expect(() => loadApiConfig({ EMAIL_PROVIDER: "smtp" })).toThrow("EMAIL_PROVIDER");
+    expect(() =>
+      loadApiConfig({
+        ...productionEnvironment,
+        EMAIL_PROVIDER: "fake"
+      })
+    ).toThrow("EMAIL_PROVIDER=fake");
+    expect(() => loadApiConfig({ RESEND_API_KEY: "re_synthetic-not-a-secret" })).toThrow(
+      "RESEND_API_KEY_FILE"
+    );
+    expect(() => loadApiConfig({ EMAIL_LOGIN_CODE_PEPPER: "synthetic" })).toThrow(
+      "EMAIL_LOGIN_CODE_PEPPER_FILE"
+    );
+  });
+
+  it("fails closed for incomplete or malformed Resend configuration without exposing values", () => {
+    const directory = mkdtempSync(join(tmpdir(), "codelift-email-config-"));
+    const apiKeyPath = join(directory, "resend-key");
+    const pepperPath = join(directory, "login-code-pepper");
+    const validKey = `re_${"a".repeat(29)}`;
+    const validPepper = Buffer.alloc(32, 11).toString("base64url");
+    try {
+      writeFileSync(apiKeyPath, validKey, { mode: 0o600 });
+      writeFileSync(pepperPath, validPepper, { mode: 0o600 });
+      const base = {
+        ...productionEnvironment,
+        EMAIL_PROVIDER: "resend",
+        EMAIL_FROM: "security@pilot.example.test",
+        RESEND_API_KEY_FILE: apiKeyPath,
+        EMAIL_LOGIN_CODE_PEPPER_FILE: pepperPath
+      };
+
+      for (const [overrides, message] of [
+        [{ EMAIL_FROM: undefined }, "EMAIL_FROM"],
+        [{ EMAIL_FROM: "CodeLift AI <security@pilot.example.test>" }, "EMAIL_FROM"],
+        [{ EMAIL_REPLY_TO: "not-an-email" }, "EMAIL_REPLY_TO"],
+        [{ RESEND_API_KEY_FILE: undefined }, "RESEND_API_KEY_FILE"],
+        [{ RESEND_API_KEY_FILE: "relative-key" }, "RESEND_API_KEY_FILE"],
+        [{ EMAIL_LOGIN_CODE_PEPPER_FILE: undefined }, "EMAIL_LOGIN_CODE_PEPPER_FILE"],
+        [{ EMAIL_LOGIN_CODE_PEPPER_FILE: "relative-pepper" }, "EMAIL_LOGIN_CODE_PEPPER_FILE"],
+        [{ EMAIL_REQUEST_TIMEOUT_MS: "999" }, "EMAIL_REQUEST_TIMEOUT_MS"],
+        [{ EMAIL_REQUEST_TIMEOUT_MS: "10001" }, "EMAIL_REQUEST_TIMEOUT_MS"],
+        [{ EMAIL_REQUEST_TIMEOUT_MS: "1.5" }, "EMAIL_REQUEST_TIMEOUT_MS"]
+      ] as const) {
+        expect(() => loadApiConfig({ ...base, ...overrides })).toThrow(message);
+      }
+
+      for (const invalidKey of [
+        "",
+        "re_short",
+        `xx_${"a".repeat(29)}`,
+        `re_${"a".repeat(510)}`,
+        `re_${"a".repeat(20)} whitespace`
+      ]) {
+        writeFileSync(apiKeyPath, invalidKey, { mode: 0o600 });
+        expect(() => loadApiConfig(base)).toThrow("RESEND_API_KEY_FILE");
+        try {
+          loadApiConfig(base);
+        } catch (error) {
+          if (invalidKey !== "") {
+            expect(String(error)).not.toContain(invalidKey);
+          }
+        }
+      }
+
+      writeFileSync(apiKeyPath, validKey, { mode: 0o600 });
+      for (const invalidPepper of [
+        "",
+        Buffer.alloc(31, 1).toString("base64url"),
+        Buffer.alloc(33, 1).toString("base64url"),
+        `${validPepper}=`,
+        `${validPepper}\n${validPepper}`
+      ]) {
+        writeFileSync(pepperPath, invalidPepper, { mode: 0o600 });
+        expect(() => loadApiConfig(base)).toThrow("EMAIL_LOGIN_CODE_PEPPER_FILE");
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts only a test fake outbox under the operating-system temporary directory", () => {
+    const directory = mkdtempSync(join(tmpdir(), "codelift-email-outbox-"));
+    try {
+      expect(
+        loadApiConfig({
+          NODE_ENV: "test",
+          REGISTRATION_MODE: "closed",
+          EMAIL_PROVIDER: "fake",
+          EMAIL_FAKE_OUTBOX_DIR: directory
+        }).email.fakeOutboxDir
+      ).toBe(directory);
+      expect(() =>
+        loadApiConfig({
+          NODE_ENV: "development",
+          EMAIL_PROVIDER: "fake",
+          EMAIL_FAKE_OUTBOX_DIR: directory
+        })
+      ).toThrow("EMAIL_FAKE_OUTBOX_DIR");
+      expect(() =>
+        loadApiConfig({
+          NODE_ENV: "test",
+          REGISTRATION_MODE: "closed",
+          EMAIL_PROVIDER: "disabled",
+          EMAIL_FAKE_OUTBOX_DIR: directory
+        })
+      ).toThrow("EMAIL_FAKE_OUTBOX_DIR");
+      expect(() =>
+        loadApiConfig({
+          NODE_ENV: "test",
+          REGISTRATION_MODE: "closed",
+          EMAIL_PROVIDER: "fake",
+          EMAIL_FAKE_OUTBOX_DIR: "relative-outbox"
+        })
+      ).toThrow("EMAIL_FAKE_OUTBOX_DIR");
+      expect(() =>
+        loadApiConfig({
+          NODE_ENV: "test",
+          REGISTRATION_MODE: "closed",
+          EMAIL_PROVIDER: "fake",
+          EMAIL_FAKE_OUTBOX_DIR: "/var/lib/codelift/outbox"
+        })
+      ).toThrow("EMAIL_FAKE_OUTBOX_DIR");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("defaults production registration to invite-only and enforces the private-pilot boundary", () => {

@@ -8,6 +8,12 @@ As inspected on 2026-08-10, the remote default and only remote branch is
 actual default branch. Do not create or switch the default branch as an
 incidental part of this release.
 
+The v0.1.1 self-service account-access work is developed on
+`codex/v0.1.1-auth-access` from the approved design commit `94fd9cd`. Its
+reviewable history includes the guardrail follow-up, implementation plan, and
+strict RED → GREEN slices. This source state does not authorize a Resend account
+change, DNS change, secret creation, purchase, or live send.
+
 ## Draft pull request and merge policy
 
 1. Push only a clean, reviewed release branch whose head commit passed the
@@ -29,8 +35,9 @@ After an explicitly approved merge, deploy that immutable merge SHA through a
 protected `production` GitHub Environment. Run the guarded live smoke against
 the exact HTTPS origin and attach redacted health/readiness, synthetic journey,
 alert, and isolated backup-restore evidence to the release record. Only after
-those checks pass may the release owner create the annotated `v0.1.0-mvp` tag at
-that deployed SHA and publish release notes. The notes must identify the image
+those checks pass may the release owner create the annotated release tag for
+the approved version (`v0.1.1` for this account-access release) at that deployed
+SHA and publish release notes. The notes must identify the image
 digests, migration/seed result, rollback SHA or digests, quality-report revision,
 live-smoke time, known limitations, and data/backup policy. A tag or release is
 never evidence that the environment passed these gates.
@@ -54,6 +61,15 @@ hosting, DNS, and optional AI secrets belong in environment secret stores and
 must not be added until immediately before the first authorized deployment.
 Rotate on owner change, suspected exposure, or incident containment.
 
+If v0.1.1 email delivery is enabled, Resend sender/DNS changes and provider-key
+creation require a distinct operator approval. Keep the Resend key and the
+independent login-code pepper in separate protected secret files, expose both
+only to the API, and never attach values to a pull request, CI output, issue,
+evidence artifact, or chat. Source/local verification uses only the guarded fake
+provider. Until a synthetic live-delivery gate is separately authorized and
+recorded, release notes must say the feature is implemented but provider setup
+is pending; password login and operator recovery remain the available paths.
+
 Configure the GitHub `production` Environment only after owner approval:
 
 - restrict deployments to the protected default branch and approved release
@@ -72,7 +88,7 @@ Configure the GitHub `production` Environment only after owner approval:
 
 The intended flow is therefore:
 
-`implementation branch -> draft PR -> required quality check -> approved merge -> protected production Environment -> deploy exact SHA -> live smoke -> isolated restore evidence -> v0.1.0-mvp tag -> release notes`.
+`implementation branch -> draft PR -> required quality check -> approved merge -> protected production Environment -> deploy exact SHA -> live smoke -> isolated restore evidence -> approved version tag -> release notes`.
 
 ## Safe initialization of `main` (playbook only)
 

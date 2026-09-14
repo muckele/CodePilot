@@ -112,12 +112,46 @@ export const passwordResetRequestSchema = z
   })
   .strict();
 
+export const emailLoginCodeSchema = z.string().regex(/^\d{6}$/);
+
+export const passwordResetEmailRequestSchema = z
+  .object({
+    email: emailAddressSchema
+  })
+  .strict();
+
+export const passwordResetEmailResponseSchema = z
+  .object({
+    message: z.literal("If an account exists for that email, we sent a password-reset link.")
+  })
+  .strict();
+
+export const emailLoginCodeRequestSchema = z
+  .object({
+    email: emailAddressSchema
+  })
+  .strict();
+
+export const emailLoginCodeRequestResponseSchema = z
+  .object({
+    message: z.literal("If an account exists for that email, we sent a sign-in code.")
+  })
+  .strict();
+
+export const emailLoginCodeVerifyRequestSchema = z
+  .object({
+    email: emailAddressSchema,
+    code: emailLoginCodeSchema
+  })
+  .strict();
+
 export const mvpConfigurationResponseSchema = z
   .object({
     registrationMode: registrationModeSchema,
     aiProvider: z.enum(["mock", "python_mock", "openai", "local"]),
     externalAiEnabled: z.boolean(),
-    agentEnabled: z.boolean()
+    agentEnabled: z.boolean(),
+    emailSelfServiceEnabled: z.boolean()
   })
   .strict();
 
@@ -374,6 +408,11 @@ export type AccountUser = z.infer<typeof accountUserSchema>;
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type PasswordResetRequest = z.infer<typeof passwordResetRequestSchema>;
+export type PasswordResetEmailRequest = z.infer<typeof passwordResetEmailRequestSchema>;
+export type PasswordResetEmailResponse = z.infer<typeof passwordResetEmailResponseSchema>;
+export type EmailLoginCodeRequest = z.infer<typeof emailLoginCodeRequestSchema>;
+export type EmailLoginCodeRequestResponse = z.infer<typeof emailLoginCodeRequestResponseSchema>;
+export type EmailLoginCodeVerifyRequest = z.infer<typeof emailLoginCodeVerifyRequestSchema>;
 export type MvpConfigurationResponse = z.infer<typeof mvpConfigurationResponseSchema>;
 export type CsrfResponse = z.infer<typeof csrfResponseSchema>;
 export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>;
